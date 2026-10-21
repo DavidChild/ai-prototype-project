@@ -7,6 +7,7 @@ import { projectRepo, pageRepo } from '@/services/storage/repositories'
 import { getStylePreset } from '@/data/stylePresets'
 import { formatTime } from '@/utils/format'
 import { useSettingsStore } from '@/stores/settings'
+import { useIterationSelectionStore } from '@/stores/iterationSelection'
 
 const router = useRouter()
 const dialog = useDialog()
@@ -14,7 +15,8 @@ const message = useMessage()
 const settings = useSettingsStore()
 
 const projects = ref<Project[]>([])
-const selectedIterations = ref<Record<string, string>>({})
+const iterationSelection = useIterationSelectionStore()
+const selectedIterations = computed(() => iterationSelection.selected)
 const projectFamilies = computed(() => {
   const groups = new Map<string, Project[]>()
   for (const project of projects.value) {
@@ -32,6 +34,7 @@ const projectFamilies = computed(() => {
   }))
 })
 function enterProject(project: Project) {
+  iterationSelection.select(project.familyId ?? project.id, project.id)
   void router.push(`/project/${project.id}`)
 }
 const copyShow = ref(false)

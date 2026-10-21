@@ -50,6 +50,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   let refineAbort: AbortController | null = null
 
   let scheduler: GenerationScheduler | null = null
+  let loadSequence = 0
+  let historySequence = 0
 
   const selectedPage = computed(
     () => pages.value.find((p) => p.id === selectedPageId.value) ?? null,
@@ -176,9 +178,12 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   }
 
   function makeScheduler(): GenerationScheduler {
+    const sequence = loadSequence
     return new GenerationScheduler({
       concurrency: () => settings.genParams.concurrency,
       generate: (page, signal, onDelta, onReasoningDelta) => {
+        if (sequence !== loadSequence || signal.aborted)
+          throw new DOMException('Aborted', 'AbortError')
         const resolved = resolveGenerationModel()
         const proj = project.value!
         const analysis = proj.analysis
@@ -206,7 +211,9 @@ export const useWorkbenchStore = defineStore('workbench', () => {
         })
       },
       callbacks: {
-        onStatus: setPageStatus,
+        onStatus: (id, status, error) => {
+          if (sequence === loadSequence) setPageStatus(id, status, error)
+        },
         onDelta: (pageId, t) => {
           const s = streams.get(pageId)
           if (s) s.text += t
@@ -216,7 +223,9 @@ export const useWorkbenchStore = defineStore('workbench', () => {
           if (s) s.reasoning += t
         },
         onSuccess: async (pageId, html) => {
+          if (sequence !== loadSequence || !pageOf(pageId)) return
           const version = await versionRepo.add(pageId, html, 'generate')
+          if (sequence !== loadSequence) return
           htmlByPage.set(pageId, html)
           const page = pageOf(pageId)
           if (page) {
@@ -232,11 +241,21 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   }
 
   async function load(projectId: string, autostart = false): Promise<void> {
+    scheduler?.cancelAll()
+    scheduler = null
+    refineAbort?.abort()
+    refineAbort = null
+    refining.value = false
+    refineStream.text = ''
+    refineStream.reasoning = ''
+    const sequence = ++loadSequence
+    ++historySequence
+    versions.value = []
     loading.value = true
     loadError.value = ''
     try {
-      scheduler?.cancelAll()
       const data = await loadWorkbench(projectId)
+      if (sequence !== loadSequence) return
       if (!data) {
         loadError.value = '项目不存在或已被删除'
         project.value = null
@@ -253,11 +272,15 @@ export const useWorkbenchStore = defineStore('workbench', () => {
       selectedPageId.value =
         data.pages.find((p) => !p.spec.groupOnly)?.id ?? data.pages[0]?.id ?? null
       await loadVersions()
+      if (sequence !== loadSequence) return
       if (autostart) {
         generatePages(pages.value.filter((p) => p.genStatus !== 'done').map((p) => p.id))
       }
+    } catch (error) {
+      if (sequence === loadSequence)
+        loadError.value = error instanceof Error ? error.message : '项目加载失败'
     } finally {
-      loading.value = false
+      if (sequence === loadSequence) loading.value = false
     }
   }
 
@@ -291,7 +314,11 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   }
 
   async function loadVersions(): Promise<void> {
-    versions.value = selectedPageId.value ? await versionRepo.listByPage(selectedPageId.value) : []
+    const sequence = ++historySequence
+    const pageId = selectedPageId.value
+    versions.value = []
+    const result = pageId ? await versionRepo.listByPage(pageId) : []
+    if (sequence === historySequence && selectedPageId.value === pageId) versions.value = result
   }
 
   async function refineSelected(feedback: string, images?: ExtractedImage[]): Promise<void> {
@@ -305,6 +332,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     refineStream.text = ''
     refineStream.reasoning = ''
     refineAbort = new AbortController()
+    const controller = refineAbort
+    const sequence = loadSequence
     try {
       const resolved = resolveGenerationModel()
       const proj = project.value!
@@ -319,15 +348,17 @@ export const useWorkbenchStore = defineStore('workbench', () => {
         maxTokens: settings.genParams.maxTokens,
         temperature: settings.genParams.temperature,
         tailwindCdnUrl: settings.genParams.tailwindCdnUrl,
-        signal: refineAbort.signal,
+        signal: controller.signal,
         onDelta: (t) => {
-          refineStream.text += t
+          if (sequence === loadSequence) refineStream.text += t
         },
         onReasoningDelta: (t) => {
-          refineStream.reasoning += t
+          if (sequence === loadSequence) refineStream.reasoning += t
         },
       })
+      if (sequence !== loadSequence || controller.signal.aborted) return
       const version = await versionRepo.add(page.id, html, 'refine', feedback)
+      if (sequence !== loadSequence) return
       htmlByPage.set(page.id, html)
       page.currentVersionId = version.id
       page.genStatus = 'done'
@@ -345,10 +376,12 @@ export const useWorkbenchStore = defineStore('workbench', () => {
         failed: !isAbort,
       })
     } finally {
-      refining.value = false
-      refineAbort = null
-      refineStream.text = ''
-      refineStream.reasoning = ''
+      if (refineAbort === controller) {
+        refining.value = false
+        refineAbort = null
+        refineStream.text = ''
+        refineStream.reasoning = ''
+      }
     }
   }
 
@@ -357,7 +390,10 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   }
 
   async function rollbackTo(version: PageVersion): Promise<void> {
+    if (loading.value || !pageOf(version.pageId) || selectedPageId.value !== version.pageId) return
+    const sequence = loadSequence
     const restored = await versionRepo.add(version.pageId, version.html, 'rollback')
+    if (sequence !== loadSequence) return
     htmlByPage.set(version.pageId, version.html)
     const page = pageOf(version.pageId)
     if (page) {
@@ -430,6 +466,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
       updatedAt: Date.now(),
     }
     await pageRepo.create(plainClone(page))
+    if (project.value?.id !== proj.id || loading.value) return
     pages.value.push(page)
     if (!groupOnly) selectPage(page.id)
   }

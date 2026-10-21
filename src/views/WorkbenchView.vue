@@ -1,5 +1,8 @@
 <script setup lang="ts">
-import { onMounted, watch } from 'vue'
+import { onMounted, ref, watch } from 'vue'
+import { useDialog, useMessage } from 'naive-ui'
+import { projectRepo } from '@/services/storage/repositories'
+import { useIterationSelectionStore } from '@/stores/iterationSelection'
 import { useRoute, useRouter } from 'vue-router'
 import { useWorkbenchStore } from '@/stores/workbench'
 import { useSettingsStore } from '@/stores/settings'
@@ -16,6 +19,40 @@ const route = useRoute()
 const router = useRouter()
 const wb = useWorkbenchStore()
 const settings = useSettingsStore()
+const iterationSelection = useIterationSelectionStore()
+const iterationOptions = ref<{ label: string; value: string }[]>([])
+const dialog = useDialog()
+const message = useMessage()
+watch(
+  () => wb.project?.id,
+  async (id) => {
+    const project = wb.project
+    iterationOptions.value = []
+    if (!project || !id) return
+    iterationSelection.select(project.familyId ?? id, id)
+    try {
+      const all = await projectRepo.list()
+      if (wb.project?.id !== id) return
+      iterationOptions.value = all
+        .filter((p) => (p.familyId ?? p.id) === (project.familyId ?? id))
+        .map((p) => ({ label: p.iteration ?? 'v1.0', value: p.id }))
+    } catch {
+      message.error('版本列表加载失败，请刷新重试')
+    }
+  },
+  { immediate: true },
+)
+function switchIteration(id: string) {
+  if (id === wb.project?.id || !iterationOptions.value.some((option) => option.value === id)) return
+  const navigate = () => router.push(`/project/${id}`)
+  dialog.warning({
+    title: '切换项目版本',
+    content: '切换将丢弃尚未保存的表单内容，并停止当前生成和微调。已保存的数据不受影响。',
+    positiveText: '切换',
+    negativeText: '取消',
+    onPositiveClick: navigate,
+  })
+}
 
 function loadFromRoute() {
   const id = route.params.id as string
@@ -39,9 +76,16 @@ watch(
     <header class="topbar">
       <n-button quaternary size="small" @click="router.push('/')">← 项目</n-button>
       <span class="project-name">{{ wb.project?.name ?? '加载中…' }}</span>
-      <n-tag v-if="wb.project" size="small" type="primary" :bordered="false">{{
-        wb.project.iteration ?? 'v1.0'
-      }}</n-tag>
+      <n-select
+        v-if="wb.project"
+        :value="wb.project.id"
+        :options="iterationOptions"
+        size="tiny"
+        style="width: 110px; flex-shrink: 0"
+        aria-label="切换项目迭代版本"
+        :disabled="wb.loading || wb.hierarchySaving"
+        @update:value="switchIteration"
+      />
       <n-tag v-if="wb.project" size="small" :bordered="false">
         {{ wb.project.platform === 'pc' ? 'PC Web' : '移动端 H5' }}
       </n-tag>
@@ -76,7 +120,7 @@ watch(
 
     <n-spin v-else-if="wb.loading" class="load-error" />
 
-    <div v-else class="columns">
+    <div v-else :key="wb.project?.id" class="columns">
       <aside class="col-left">
         <PagePanel />
       </aside>
