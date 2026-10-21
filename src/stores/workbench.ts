@@ -163,8 +163,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     if (status === 'generating') streams.set(pageId, { text: '', reasoning: '' })
     if (status === 'failed') {
       streams.delete(pageId)
-      void pageRepo.update(pageId, { genStatus: 'failed', errorMessage: error })
     }
+    void pageRepo.update(pageId, { genStatus: status, errorMessage: error })
   }
 
   function resolveGenerationModel() {
@@ -453,8 +453,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
 
   async function renameProject(name: string): Promise<void> {
     if (!project.value) return
+    await projectRepo.updateFamily(project.value.familyId ?? project.value.id, { name })
     project.value.name = name
-    await projectRepo.update(project.value.id, { name })
   }
 
   return {

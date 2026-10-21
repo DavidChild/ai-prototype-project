@@ -14,13 +14,66 @@ const message = useMessage()
 const settings = useSettingsStore()
 
 const projects = ref<Project[]>([])
+const selectedIterations = ref<Record<string, string>>({})
+const projectFamilies = computed(() => {
+  const groups = new Map<string, Project[]>()
+  for (const project of projects.value) {
+    const key = project.familyId ?? project.id
+    const group = groups.get(key) ?? []
+    group.push(project)
+    groups.set(key, group)
+  }
+  return [...groups.values()].map((versions) => ({
+    versions,
+    selected:
+      versions.find(
+        (p) => p.id === selectedIterations.value[versions[0]!.familyId ?? versions[0]!.id],
+      ) ?? versions[0]!,
+  }))
+})
+function enterProject(project: Project) {
+  void router.push(`/project/${project.id}`)
+}
+const copyShow = ref(false)
+const copySource = ref('')
+const copyLabel = ref('')
+const copyFamily = ref('')
+const copying = ref(false)
+const copyOptions = computed(() =>
+  projects.value
+    .filter((p) => (p.familyId ?? p.id) === copyFamily.value)
+    .map((p) => ({ label: p.iteration ?? 'v1.0', value: p.id })),
+)
+function openCopy(project: Project) {
+  copyFamily.value = project.familyId ?? project.id
+  copySource.value = project.id
+  copyLabel.value = ''
+  copyShow.value = true
+}
+async function submitCopy() {
+  if (copying.value || !copySource.value || !copyLabel.value.trim()) return
+  copying.value = true
+  try {
+    const target = await projectRepo.copyIteration(copySource.value, copyLabel.value)
+    selectedIterations.value[target.familyId!] = target.id
+    await refresh()
+    copyShow.value = false
+    message.success('新版本已复制，可选择该版本进入开发')
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '复制版本失败')
+  } finally {
+    copying.value = false
+  }
+}
 const pageCounts = ref(new Map<string, number>())
 const loading = ref(true)
 const showHidden = ref(false)
 const visibilitySaving = ref(new Set<string>())
-const hiddenCount = computed(() => projects.value.filter((project) => project.hidden).length)
+const hiddenCount = computed(
+  () => projectFamilies.value.filter(({ selected }) => selected.hidden).length,
+)
 const visibleProjects = computed(() =>
-  projects.value.filter((project) => showHidden.value || !project.hidden),
+  projectFamilies.value.filter(({ selected }) => showHidden.value || !selected.hidden),
 )
 
 async function toggleHidden(project: Project) {
@@ -28,8 +81,9 @@ async function toggleHidden(project: Project) {
   visibilitySaving.value.add(project.id)
   const hidden = !project.hidden
   try {
-    await projectRepo.setHidden(project.id, hidden)
-    project.hidden = hidden
+    await projectRepo.updateFamily(project.familyId ?? project.id, { hidden })
+    for (const p of projects.value)
+      if ((p.familyId ?? p.id) === (project.familyId ?? project.id)) p.hidden = hidden
     message.success(hidden ? '已隐藏，可通过右上角小眼睛查看' : '已取消隐藏')
   } catch (error) {
     message.error(error instanceof Error ? error.message : '操作失败，请重试')
@@ -59,11 +113,11 @@ async function refresh() {
 function confirmRemove(project: Project) {
   dialog.warning({
     title: '删除项目',
-    content: `删除「${project.name}」及其全部页面、版本历史与文档？此操作不可恢复。`,
+    content: `删除「${project.name}」的所有迭代版本、页面、历史与文档？此操作不可恢复。`,
     positiveText: '删除',
     negativeText: '取消',
     onPositiveClick: async () => {
-      await projectRepo.removeCascade(project.id)
+      await projectRepo.removeFamily(project.familyId ?? project.id)
       message.success('已删除')
       await refresh()
     },
@@ -79,7 +133,7 @@ function openRename(project: Project) {
 async function submitRename() {
   const name = renameValue.value.trim()
   if (!name || !renameTarget.value) return
-  await projectRepo.update(renameTarget.value.id, { name })
+  await projectRepo.updateFamily(renameTarget.value.familyId ?? renameTarget.value.id, { name })
   renameShow.value = false
   await refresh()
 }
@@ -158,12 +212,12 @@ onMounted(refresh)
 
     <div v-else class="card-grid">
       <n-card
-        v-for="p in visibleProjects"
-        :key="p.id"
+        v-for="{ selected: p, versions } in visibleProjects"
+        :key="p.familyId ?? p.id"
         size="small"
         hoverable
         class="project-card"
-        @click="router.push(`/project/${p.id}`)"
+        @click="enterProject(p)"
       >
         <template #header>
           <span class="proj-dot" :style="{ background: p.styleSpec.tokens.primaryColor }" />
@@ -185,22 +239,74 @@ onMounted(refresh)
           <n-text depth="3" style="font-size: 12px"> 更新于 {{ formatTime(p.updatedAt) }} </n-text>
         </n-space>
         <template #action>
-          <n-space justify="end" size="small" @click.stop>
-            <n-button
+          <div class="card-actions" @click.stop>
+            <n-select
+              :value="p.id"
               size="tiny"
-              quaternary
-              :loading="visibilitySaving.has(p.id)"
-              @click="toggleHidden(p)"
-            >
-              {{ p.hidden ? '取消隐藏' : '隐藏' }}
-            </n-button>
-            <n-button size="tiny" quaternary @click="openRename(p)">重命名</n-button>
-            <n-button size="tiny" quaternary type="error" @click="confirmRemove(p)">删除</n-button>
-          </n-space>
+              aria-label="选择项目迭代版本"
+              style="width: 100px; flex-shrink: 0"
+              :options="versions.map((v) => ({ label: v.iteration ?? 'v1.0', value: v.id }))"
+              @update:value="(id: string) => (selectedIterations[p.familyId ?? p.id] = id)"
+            />
+            <n-space justify="end" size="small">
+              <n-button size="tiny" quaternary @click="openCopy(p)">新建版本</n-button>
+              <n-button size="tiny" quaternary type="primary" @click="enterProject(p)"
+                >进入</n-button
+              >
+              <n-button
+                size="tiny"
+                quaternary
+                :loading="visibilitySaving.has(p.id)"
+                @click="toggleHidden(p)"
+              >
+                {{ p.hidden ? '取消隐藏' : '隐藏' }}
+              </n-button>
+              <n-button size="tiny" quaternary @click="openRename(p)">重命名</n-button>
+              <n-button size="tiny" quaternary type="error" @click="confirmRemove(p)"
+                >删除</n-button
+              >
+            </n-space>
+          </div>
         </template>
       </n-card>
     </div>
 
+    <n-modal
+      v-model:show="copyShow"
+      preset="card"
+      title="新建迭代版本"
+      style="width: 440px"
+      :mask-closable="!copying"
+      :closable="!copying"
+      :close-on-esc="!copying"
+    >
+      <n-form label-placement="top" size="small">
+        <n-form-item label="基于已有版本复制（必选）">
+          <n-select v-model:value="copySource" :options="copyOptions" :disabled="copying" />
+        </n-form-item>
+        <n-form-item label="新版本号">
+          <n-input
+            v-model:value="copyLabel"
+            placeholder="例如 v1.1 或 v2.0"
+            :disabled="copying"
+            @keyup.enter="submitCopy"
+          />
+        </n-form-item>
+        <n-text depth="3">复制页面、生成内容、历史记录和文档；各版本后续修改互不影响。</n-text>
+      </n-form>
+      <template #footer
+        ><n-space justify="end">
+          <n-button :disabled="copying" @click="copyShow = false">取消</n-button>
+          <n-button
+            type="primary"
+            :loading="copying"
+            :disabled="!copySource || !copyLabel.trim()"
+            @click="submitCopy"
+            >复制新版本</n-button
+          >
+        </n-space></template
+      >
+    </n-modal>
     <n-modal v-model:show="renameShow" preset="card" title="重命名项目" style="width: 400px">
       <n-input v-model:value="renameValue" @keyup.enter="submitRename" />
       <template #footer>
@@ -243,12 +349,19 @@ onMounted(refresh)
 
 .card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
   gap: 14px;
 }
 
 .project-card {
   cursor: pointer;
+}
+.card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .proj-dot {

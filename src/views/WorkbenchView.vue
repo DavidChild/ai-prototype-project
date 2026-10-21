@@ -39,15 +39,15 @@ watch(
     <header class="topbar">
       <n-button quaternary size="small" @click="router.push('/')">← 项目</n-button>
       <span class="project-name">{{ wb.project?.name ?? '加载中…' }}</span>
+      <n-tag v-if="wb.project" size="small" type="primary" :bordered="false">{{
+        wb.project.iteration ?? 'v1.0'
+      }}</n-tag>
       <n-tag v-if="wb.project" size="small" :bordered="false">
         {{ wb.project.platform === 'pc' ? 'PC Web' : '移动端 H5' }}
       </n-tag>
       <n-tag v-if="wb.project" size="small" :bordered="false">
         {{ getStylePreset(wb.project.styleSpec.presetId)?.name ?? '自定义风格' }}
-        <span
-          class="style-dot"
-          :style="{ background: wb.project.styleSpec.tokens.primaryColor }"
-        />
+        <span class="style-dot" :style="{ background: wb.project.styleSpec.tokens.primaryColor }" />
       </n-tag>
       <div style="flex: 1" />
       <div class="topbar-model">

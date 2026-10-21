@@ -40,6 +40,10 @@ export interface StyleSpec {
 
 export interface Project {
   id: string
+  /** 同一项目各迭代共享的标识；id 仍是工作台的独立数据空间。 */
+  familyId?: string
+  iteration?: string
+  basedOnId?: string
   name: string
   /** 隐藏项目仅影响项目列表展示，不删除任何内容。 */
   hidden?: boolean

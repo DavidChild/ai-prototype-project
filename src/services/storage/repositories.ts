@@ -15,7 +15,94 @@ export const projectRepo = {
   },
 
   async create(project: Project): Promise<void> {
-    await db.projects.add(project)
+    await db.projects.add({
+      ...project,
+      familyId: project.familyId ?? project.id,
+      iteration: project.iteration ?? 'v1.0',
+    })
+  },
+
+  async copyIteration(sourceId: string, iteration: string): Promise<Project> {
+    const label = iteration.trim()
+    if (!label) throw new Error('请输入版本号')
+    return db.transaction(
+      'rw',
+      [db.projects, db.pages, db.pageVersions, db.sourceDocs, db.assets],
+      async () => {
+        const source = await db.projects.get(sourceId)
+        if (!source) throw new Error('来源版本不存在')
+        const familyId = source.familyId ?? source.id
+        const siblings = await db.projects.where('familyId').equals(familyId).toArray()
+        if (siblings.some((p) => p.iteration?.toLowerCase() === label.toLowerCase()))
+          throw new Error('该版本号已存在')
+        const now = Date.now()
+        const target: Project = {
+          ...source,
+          id: nanoid(),
+          familyId,
+          iteration: label,
+          basedOnId: source.id,
+          createdAt: now,
+          updatedAt: now,
+        }
+        const pages = await pageRepo.listByProject(sourceId)
+        if (pages.some((p) => p.genStatus === 'queued' || p.genStatus === 'generating'))
+          throw new Error('来源版本仍在生成，请先停止生成或等待完成')
+        const pageIds = new Map(pages.map((p) => [p.id, nanoid()]))
+        const versions = await db.pageVersions
+          .where('pageId')
+          .anyOf([...pageIds.keys()])
+          .toArray()
+        const versionIds = new Map(versions.map((v) => [v.id, nanoid()]))
+        const docs = await db.sourceDocs.where('projectId').equals(sourceId).toArray()
+        const docIds = new Map(docs.map((d) => [d.id, nanoid()]))
+        const assets = await db.assets.where('projectId').equals(sourceId).toArray()
+        await db.projects.add(target)
+        await db.pages.bulkAdd(
+          pages.map((p) => ({
+            ...p,
+            id: pageIds.get(p.id)!,
+            projectId: target.id,
+            currentVersionId: p.currentVersionId ? versionIds.get(p.currentVersionId) : undefined,
+            updatedAt: now,
+          })),
+        )
+        await db.pageVersions.bulkAdd(
+          versions.map((v) => ({
+            ...v,
+            id: versionIds.get(v.id)!,
+            pageId: pageIds.get(v.pageId)!,
+          })),
+        )
+        await db.sourceDocs.bulkAdd(
+          docs.map((d) => ({ ...d, id: docIds.get(d.id)!, projectId: target.id })),
+        )
+        await db.assets.bulkAdd(
+          assets.map((a) => ({
+            ...a,
+            id: nanoid(),
+            projectId: target.id,
+            docId: docIds.get(a.docId) ?? a.docId,
+          })),
+        )
+        return target
+      },
+    )
+  },
+
+  async updateFamily(familyId: string, patch: { name?: string; hidden?: boolean }): Promise<void> {
+    await db.projects.where('familyId').equals(familyId).modify(patch)
+  },
+
+  async removeFamily(familyId: string): Promise<void> {
+    await db.transaction(
+      'rw',
+      [db.projects, db.pages, db.pageVersions, db.sourceDocs, db.assets],
+      async () => {
+        const iterations = await db.projects.where('familyId').equals(familyId).primaryKeys()
+        for (const id of iterations) await projectRepo.removeCascade(id)
+      },
+    )
   },
 
   async update(id: string, patch: Partial<Omit<Project, 'id'>>): Promise<void> {

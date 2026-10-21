@@ -38,3 +38,17 @@ db.version(1).stores({
   sourceDocs: 'id, projectId',
   assets: 'id, projectId, docId',
 })
+
+db.version(2)
+  .stores({
+    projects: 'id, updatedAt, familyId',
+  })
+  .upgrade(async (tx) => {
+    await tx
+      .table('projects')
+      .toCollection()
+      .modify((project) => {
+        project.familyId = project.id
+        project.iteration = 'v1.0'
+      })
+  })
