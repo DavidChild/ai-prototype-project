@@ -22,6 +22,12 @@ export const projectRepo = {
     await db.projects.update(id, { ...patch, updatedAt: Date.now() })
   },
 
+  /** 切换可见性不改变内容更新时间或项目排列顺序。 */
+  async setHidden(id: string, hidden: boolean): Promise<void> {
+    const updated = await db.projects.update(id, { hidden })
+    if (!updated) throw new Error('项目不存在，请刷新后重试')
+  },
+
   /** 级联删除项目及其页面、版本、源文档、图片资产 */
   async removeCascade(id: string): Promise<void> {
     await db.transaction(
@@ -40,6 +46,34 @@ export const projectRepo = {
 }
 
 export const pageRepo = {
+  /** 只更新名称，不覆盖层级、生成状态或版本引用。 */
+  async rename(id: string, name: string): Promise<void> {
+    const trimmed = name.trim()
+    if (!trimmed) throw new Error('页面名不能为空')
+    await db.transaction('rw', [db.pages, db.projects], async () => {
+      const page = await db.pages.get(id)
+      if (!page) throw new Error('页面不存在，请刷新后重试')
+      const now = Date.now()
+      await db.pages.update(id, { 'spec.name': trimmed, updatedAt: now })
+      const project = await db.projects.get(page.projectId)
+      if (project) {
+        await db.projects.update(project.id, {
+          updatedAt: now,
+          ...(project.analysis
+            ? {
+                analysis: {
+                  ...project.analysis,
+                  pages: project.analysis.pages.map((spec) =>
+                    spec.id === page.spec.id ? { ...spec, name: trimmed } : spec,
+                  ),
+                },
+              }
+            : {}),
+        })
+      }
+    })
+  },
+
   listByProject(projectId: string): Promise<Page[]> {
     return db.pages.where('projectId').equals(projectId).sortBy('sortOrder')
   },
@@ -54,6 +88,31 @@ export const pageRepo = {
 
   async create(page: Page): Promise<void> {
     await db.pages.add(page)
+  },
+
+  /** Patch only hierarchy fields so a simultaneous generation cannot lose its version/status. */
+  async saveHierarchy(projectId: string, pages: Page[]): Promise<void> {
+    await db.transaction('rw', [db.pages, db.projects], async () => {
+      const now = Date.now()
+      for (const page of pages) {
+        const existing = await db.pages.get(page.id)
+        if (!existing || existing.projectId !== projectId)
+          throw new Error('页面已变更，请刷新后重试')
+        await db.pages.update(page.id, {
+          spec: page.spec,
+          sortOrder: page.sortOrder,
+          updatedAt: now,
+        })
+      }
+      const project = await db.projects.get(projectId)
+      if (!project) throw new Error('项目不存在')
+      await db.projects.update(projectId, {
+        updatedAt: now,
+        ...(project.analysis
+          ? { analysis: { ...project.analysis, pages: pages.map((page) => page.spec) } }
+          : {}),
+      })
+    })
   },
 
   async update(id: string, patch: Partial<Omit<Page, 'id'>>): Promise<void> {

@@ -56,6 +56,7 @@ declare module 'vue' {
     NText: typeof import('naive-ui')['NText']
     PageInfoForm: typeof import('./components/workbench/PageInfoForm.vue')['default']
     PagePanel: typeof import('./components/workbench/PagePanel.vue')['default']
+    PageTreeList: typeof import('./components/workbench/PageTreeList.vue')['default']
     ProviderCard: typeof import('./components/settings/ProviderCard.vue')['default']
     ProviderForm: typeof import('./components/settings/ProviderForm.vue')['default']
     RefineChat: typeof import('./components/workbench/RefineChat.vue')['default']

@@ -41,6 +41,8 @@ export interface StyleSpec {
 export interface Project {
   id: string
   name: string
+  /** 隐藏项目仅影响项目列表展示，不删除任何内容。 */
+  hidden?: boolean
   platform: Platform
   styleSpec: StyleSpec
   analysis?: RequirementAnalysis

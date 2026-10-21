@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { useDialog, useMessage } from 'naive-ui'
 import type { Page, PageGenStatus } from '@/types/page'
 import { useWorkbenchStore } from '@/stores/workbench'
+import PageTreeList from './PageTreeList.vue'
 
 const wb = useWorkbenchStore()
 const dialog = useDialog()
@@ -15,9 +16,10 @@ const addGroupOnly = ref(false)
 
 const parentOptions = computed(() => [
   { label: '作为一级菜单', value: '' },
-  ...wb.menuGroups
-    .filter((g) => !g.top.spec.parentId)
-    .map((g) => ({ label: `${g.top.spec.name} 下的二级`, value: g.top.spec.id })),
+  ...wb.pageRows.map(({ page, depth }) => ({
+    label: `${'　'.repeat(depth)}${page.spec.name} 下的页面`,
+    value: page.spec.id,
+  })),
 ])
 
 const STATUS_META: Record<PageGenStatus, { label: string; color: string }> = {
@@ -34,7 +36,7 @@ function childrenCount(page: Page): number {
 
 function confirmRemove(page: Page) {
   if (childrenCount(page) > 0) {
-    message.warning('该一级菜单下还有二级页面，请先删除或移动它们')
+    message.warning('该菜单下还有下级页面，请先删除或移动它们')
     return
   }
   dialog.warning({
@@ -67,7 +69,9 @@ function openAdd(parentId = '') {
     <div class="panel-head">
       <n-progress
         type="line"
-        :percentage="wb.progress.total ? Math.round((wb.progress.done / wb.progress.total) * 100) : 0"
+        :percentage="
+          wb.progress.total ? Math.round((wb.progress.done / wb.progress.total) * 100) : 0
+        "
         :show-indicator="false"
         :height="4"
       />
@@ -89,6 +93,14 @@ function openAdd(parentId = '') {
           <n-button v-if="wb.progress.active" size="tiny" secondary @click="wb.cancelAll()">
             全部停止
           </n-button>
+          <n-tag
+            v-else-if="wb.progress.total > 0 && wb.progress.done === wb.progress.total"
+            size="small"
+            type="success"
+            :bordered="false"
+          >
+            全部完成
+          </n-tag>
           <n-button
             v-else
             size="tiny"
@@ -97,7 +109,9 @@ function openAdd(parentId = '') {
             :disabled="!wb.progress.total"
             @click="
               wb.generatePages(
-                wb.pages.filter((p) => p.genStatus !== 'done' && !p.spec.groupOnly).map((p) => p.id),
+                wb.pages
+                  .filter((p) => p.genStatus !== 'done' && !p.spec.groupOnly)
+                  .map((p) => p.id),
               )
             "
           >
@@ -108,90 +122,7 @@ function openAdd(parentId = '') {
     </div>
 
     <n-scrollbar class="panel-body">
-      <div v-for="group in wb.menuGroups" :key="group.top.id" class="menu-group">
-        <!-- 一级：纯分组 -->
-        <div v-if="group.top.spec.groupOnly" class="group-header">
-          <span class="group-name">{{ group.top.spec.name }}</span>
-          <span class="item-actions">
-            <n-button size="tiny" quaternary title="添加二级页面" @click="openAdd(group.top.spec.id)">
-              ＋
-            </n-button>
-            <n-button
-              size="tiny"
-              quaternary
-              type="error"
-              title="删除分组"
-              @click="confirmRemove(group.top)"
-            >
-              ✕
-            </n-button>
-          </span>
-        </div>
-        <!-- 一级：页面 -->
-        <div
-          v-else
-          class="page-item top-item"
-          :class="{ active: wb.selectedPageId === group.top.id }"
-          @click="wb.selectPage(group.top.id)"
-        >
-          <n-spin v-if="group.top.genStatus === 'generating'" :size="10" class="status-spin" />
-          <span
-            v-else
-            class="status-dot"
-            :style="{ background: STATUS_META[group.top.genStatus].color }"
-            :title="STATUS_META[group.top.genStatus].label"
-          />
-          <span class="page-name">{{ group.top.spec.name }}</span>
-          <span class="item-actions" @click.stop>
-            <n-button
-              size="tiny"
-              quaternary
-              title="重新生成"
-              :disabled="group.top.genStatus === 'generating' || group.top.genStatus === 'queued'"
-              @click="wb.generatePages([group.top.id])"
-            >
-              ↻
-            </n-button>
-            <n-button size="tiny" quaternary title="添加二级页面" @click="openAdd(group.top.spec.id)">
-              ＋
-            </n-button>
-            <n-button size="tiny" quaternary type="error" title="删除" @click="confirmRemove(group.top)">
-              ✕
-            </n-button>
-          </span>
-        </div>
-        <!-- 二级页面 -->
-        <div
-          v-for="page in group.children"
-          :key="page.id"
-          class="page-item child-item"
-          :class="{ active: wb.selectedPageId === page.id }"
-          @click="wb.selectPage(page.id)"
-        >
-          <n-spin v-if="page.genStatus === 'generating'" :size="10" class="status-spin" />
-          <span
-            v-else
-            class="status-dot"
-            :style="{ background: STATUS_META[page.genStatus].color }"
-            :title="STATUS_META[page.genStatus].label"
-          />
-          <span class="page-name">{{ page.spec.name }}</span>
-          <span class="item-actions" @click.stop>
-            <n-button
-              size="tiny"
-              quaternary
-              title="重新生成"
-              :disabled="page.genStatus === 'generating' || page.genStatus === 'queued'"
-              @click="wb.generatePages([page.id])"
-            >
-              ↻
-            </n-button>
-            <n-button size="tiny" quaternary type="error" title="删除" @click="confirmRemove(page)">
-              ✕
-            </n-button>
-          </span>
-        </div>
-      </div>
+      <PageTreeList :status-meta="STATUS_META" @add="openAdd" @remove="confirmRemove" />
     </n-scrollbar>
 
     <div class="panel-foot">

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useDialog, useMessage } from 'naive-ui'
 import type { Project } from '@/types/project'
@@ -16,6 +16,27 @@ const settings = useSettingsStore()
 const projects = ref<Project[]>([])
 const pageCounts = ref(new Map<string, number>())
 const loading = ref(true)
+const showHidden = ref(false)
+const visibilitySaving = ref(new Set<string>())
+const hiddenCount = computed(() => projects.value.filter((project) => project.hidden).length)
+const visibleProjects = computed(() =>
+  projects.value.filter((project) => showHidden.value || !project.hidden),
+)
+
+async function toggleHidden(project: Project) {
+  if (visibilitySaving.value.has(project.id)) return
+  visibilitySaving.value.add(project.id)
+  const hidden = !project.hidden
+  try {
+    await projectRepo.setHidden(project.id, hidden)
+    project.hidden = hidden
+    message.success(hidden ? '已隐藏，可通过右上角小眼睛查看' : '已取消隐藏')
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '操作失败，请重试')
+  } finally {
+    visibilitySaving.value.delete(project.id)
+  }
+}
 
 const renameShow = ref(false)
 const renameTarget = ref<Project | null>(null)
@@ -76,6 +97,31 @@ onMounted(refresh)
       <n-space>
         <n-button
           quaternary
+          :type="showHidden ? 'primary' : 'default'"
+          role="switch"
+          :aria-checked="showHidden"
+          aria-label="显示隐藏项目"
+          :title="`${showHidden ? '收起隐藏项目' : '显示隐藏项目'}（${hiddenCount} 个）`"
+          @click="showHidden = !showHidden"
+        >
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+            <circle cx="12" cy="12" r="3" />
+            <path v-if="!showHidden" d="m3 3 18 18" />
+          </svg>
+        </n-button>
+        <n-button
+          quaternary
           :title="settings.appTheme === 'dark' ? '切换到浅色' : '切换到深色'"
           @click="settings.toggleAppTheme()"
         >
@@ -99,9 +145,20 @@ onMounted(refresh)
       </template>
     </n-empty>
 
+    <n-empty
+      v-else-if="!visibleProjects.length"
+      description="项目已全部隐藏，点击右上角小眼睛查看"
+      style="margin-top: 100px"
+      size="large"
+    >
+      <template #extra>
+        <n-button @click="showHidden = true">显示隐藏项目</n-button>
+      </template>
+    </n-empty>
+
     <div v-else class="card-grid">
       <n-card
-        v-for="p in projects"
+        v-for="p in visibleProjects"
         :key="p.id"
         size="small"
         hoverable
@@ -109,28 +166,34 @@ onMounted(refresh)
         @click="router.push(`/project/${p.id}`)"
       >
         <template #header>
-          <span
-            class="proj-dot"
-            :style="{ background: p.styleSpec.tokens.primaryColor }"
-          />
+          <span class="proj-dot" :style="{ background: p.styleSpec.tokens.primaryColor }" />
           {{ p.name }}
         </template>
         <template #header-extra>
-          <n-tag size="small" :bordered="false">
-            {{ p.platform === 'pc' ? 'PC' : 'H5' }}
-          </n-tag>
+          <n-space size="small">
+            <n-tag v-if="p.hidden" size="small" :bordered="false" type="warning">已隐藏</n-tag>
+            <n-tag size="small" :bordered="false">
+              {{ p.platform === 'pc' ? 'PC' : 'H5' }}
+            </n-tag>
+          </n-space>
         </template>
         <n-space vertical size="small">
           <n-text depth="3" style="font-size: 12px">
             {{ getStylePreset(p.styleSpec.presetId)?.name ?? '自定义风格' }}
             · {{ pageCounts.get(p.id) ?? 0 }} 个页面
           </n-text>
-          <n-text depth="3" style="font-size: 12px">
-            更新于 {{ formatTime(p.updatedAt) }}
-          </n-text>
+          <n-text depth="3" style="font-size: 12px"> 更新于 {{ formatTime(p.updatedAt) }} </n-text>
         </n-space>
         <template #action>
           <n-space justify="end" size="small" @click.stop>
+            <n-button
+              size="tiny"
+              quaternary
+              :loading="visibilitySaving.has(p.id)"
+              @click="toggleHidden(p)"
+            >
+              {{ p.hidden ? '取消隐藏' : '隐藏' }}
+            </n-button>
             <n-button size="tiny" quaternary @click="openRename(p)">重命名</n-button>
             <n-button size="tiny" quaternary type="error" @click="confirmRemove(p)">删除</n-button>
           </n-space>

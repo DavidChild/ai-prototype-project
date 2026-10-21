@@ -1,5 +1,5 @@
 import { computed, reactive, ref } from 'vue'
-import { defineStore } from 'pinia'
+import { acceptHMRUpdate, defineStore } from 'pinia'
 import { nanoid } from 'nanoid'
 import type { PageSpec } from '@/types/analysis'
 import type { Page, PageVersion } from '@/types/page'
@@ -9,13 +9,10 @@ import { LLMError } from '@/services/llm/errors'
 import { generatePageHtml } from '@/services/generation/generatePage'
 import { refinePageHtml } from '@/services/generation/refinePage'
 import { GenerationScheduler } from '@/services/generation/scheduler'
-import {
-  loadWorkbench,
-  pageRepo,
-  projectRepo,
-  versionRepo,
-} from '@/services/storage/repositories'
+import { loadWorkbench, pageRepo, projectRepo, versionRepo } from '@/services/storage/repositories'
 import { useSettingsStore } from './settings'
+import { movePageTree, pageTreeRows, type PageDropPosition } from '@/utils/pageTree'
+import { pageTypeLockReason } from '@/utils/pageEditing'
 
 export interface StreamState {
   text: string
@@ -44,6 +41,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   const versions = ref<PageVersion[]>([])
   const loading = ref(false)
   const loadError = ref('')
+  const hierarchySaving = ref(false)
+  const pageRows = computed(() => pageTreeRows(pages.value))
 
   const refining = ref(false)
   const refineStream = reactive<StreamState>({ text: '', reasoning: '' })
@@ -99,12 +98,46 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   })
 
   function buildMenuTreeText(): string {
-    const lines: string[] = []
-    for (const { top, children } of menuGroups.value) {
-      lines.push(`- ${top.spec.name}${top.spec.groupOnly ? '（分组，无独立页面）' : ''}`)
-      for (const child of children) lines.push(`  - ${child.spec.name}`)
+    return pageRows.value
+      .map(
+        ({ page, depth }) =>
+          `${'  '.repeat(depth)}- ${page.spec.name}${page.spec.groupOnly ? '（分组，无独立页面）' : ''}`,
+      )
+      .join('\n')
+  }
+
+  async function movePage(
+    pageId: string,
+    targetId: string | null,
+    position: PageDropPosition,
+  ): Promise<void> {
+    const proj = project.value
+    if (!proj) throw new Error('项目尚未加载')
+    if (hierarchySaving.value) throw new Error('正在保存页面层级，请稍候')
+    const moved = movePageTree(pages.value, pageId, targetId, position)
+    if (
+      moved.every(
+        (page, i) =>
+          page.id === pages.value[i]?.id &&
+          page.sortOrder === pages.value[i]?.sortOrder &&
+          page.spec.parentId === pages.value[i]?.spec.parentId,
+      )
+    )
+      return
+    hierarchySaving.value = true
+    try {
+      await pageRepo.saveHierarchy(proj.id, plainClone(moved))
+      if (project.value?.id !== proj.id) return
+      const current = new Map(pages.value.map((page) => [page.id, page]))
+      pages.value = moved.map((page) => ({
+        ...current.get(page.id)!,
+        spec: page.spec,
+        sortOrder: page.sortOrder,
+      }))
+      if (proj.analysis) proj.analysis.pages = pages.value.map((page) => plainClone(page.spec))
+    } finally {
+      hierarchySaving.value = false
     }
-    return lines.join('\n')
   }
 
   function pageOf(pageId: string): Page | undefined {
@@ -258,9 +291,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   }
 
   async function loadVersions(): Promise<void> {
-    versions.value = selectedPageId.value
-      ? await versionRepo.listByPage(selectedPageId.value)
-      : []
+    versions.value = selectedPageId.value ? await versionRepo.listByPage(selectedPageId.value) : []
   }
 
   async function refineSelected(feedback: string, images?: ExtractedImage[]): Promise<void> {
@@ -336,21 +367,52 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     await loadVersions()
   }
 
+  async function renamePage(pageId: string, name: string): Promise<void> {
+    const trimmed = name.trim()
+    if (!trimmed) throw new Error('页面名不能为空')
+    if (hierarchySaving.value) throw new Error('正在保存页面层级，请稍候')
+    const page = pageOf(pageId)
+    if (!page) throw new Error('页面不存在，请刷新后重试')
+    if (page.spec.name === trimmed) return
+    await pageRepo.rename(pageId, trimmed)
+    const current = pageOf(pageId)
+    if (current) current.spec = { ...current.spec, name: trimmed }
+    if (project.value?.id === page.projectId && project.value.analysis) {
+      project.value.analysis.pages = project.value.analysis.pages.map((spec) =>
+        spec.id === page.spec.id ? { ...spec, name: trimmed } : spec,
+      )
+    }
+  }
+
   async function updateSelectedSpec(spec: PageSpec): Promise<void> {
     const page = selectedPage.value
     if (!page) return
-    page.spec = plainClone(spec)
-    await pageRepo.update(page.id, { spec: page.spec })
+    if (!!spec.groupOnly !== !!page.spec.groupOnly) {
+      const reason = pageTypeLockReason(page, htmlByPage.has(page.id))
+      if (reason) throw new Error(reason)
+    }
+    if (hierarchySaving.value) throw new Error('正在保存页面层级，请稍候')
+    if (spec.parentId !== page.spec.parentId) {
+      const target = pages.value.find((p) => p.spec.id === spec.parentId)
+      if (spec.parentId && !target) throw new Error('上级页面不存在')
+      await movePage(page.id, target?.id ?? null, 'inside')
+    }
+    const current = pageOf(page.id)
+    if (!current) return
+    if (!!spec.groupOnly !== !!current.spec.groupOnly) {
+      const reason = pageTypeLockReason(current, htmlByPage.has(current.id))
+      if (reason) throw new Error(reason)
+    }
+    const savedSpec = plainClone({ ...spec, id: current.spec.id })
+    await pageRepo.update(current.id, { spec: savedSpec })
+    current.spec = savedSpec
   }
 
   /** 新增页面：parentSpecId 为空 = 一级菜单；groupOnly = 仅分组 */
-  async function addPage(
-    name: string,
-    parentSpecId?: string,
-    groupOnly = false,
-  ): Promise<void> {
+  async function addPage(name: string, parentSpecId?: string, groupOnly = false): Promise<void> {
     const proj = project.value
     if (!proj) return
+    if (hierarchySaving.value) throw new Error('正在保存页面层级，请稍候')
     const specId = nanoid()
     const page: Page = {
       id: specId,
@@ -373,6 +435,10 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   }
 
   async function removePage(pageId: string): Promise<void> {
+    if (hierarchySaving.value) throw new Error('正在保存页面层级，请稍候')
+    if (pages.value.some((page) => page.spec.parentId === pageOf(pageId)?.spec.id)) {
+      throw new Error('该菜单下还有下级页面，请先删除或移动它们')
+    }
     scheduler?.cancel(pageId)
     await pageRepo.remove(pageId)
     pages.value = pages.value.filter((p) => p.id !== pageId)
@@ -404,6 +470,9 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     versions,
     loading,
     loadError,
+    hierarchySaving,
+    pageRows,
+    movePage,
     refining,
     refineStream,
     progress,
@@ -419,8 +488,14 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     cancelRefine,
     rollbackTo,
     updateSelectedSpec,
+    renamePage,
     addPage,
     removePage,
     renameProject,
   }
 })
+
+// Keep existing store instances in sync when actions are added during development.
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useWorkbenchStore, import.meta.hot))
+}

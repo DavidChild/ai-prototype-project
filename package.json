@@ -10,6 +10,7 @@
     "build-only": "vite build",
     "type-check": "vue-tsc --build",
     "test:proxy": "node --test tests/llmProxy.test.mjs",
+    "test:page-tree": "node --test tests/pageTree.test.mjs",
     "lint": "run-s lint:*",
     "lint:oxlint": "oxlint . --fix",
     "lint:eslint": "eslint . --fix --cache",
