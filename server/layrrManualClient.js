@@ -28,6 +28,27 @@ let interaction,
 function keyFor(node) {
   return node && nodeKeys.get(node)
 }
+function positionDragMode() {
+  return $('dragMode').value !== 'reorder'
+}
+function dragHandleLabel() {
+  return { free: '自由拖动', parent: '父容器内拖拽', reorder: '移动模块' }[$('dragMode').value]
+}
+function dragOptions(handle = false) {
+  const constrained = $('dragMode').value === 'parent'
+  return {
+    // Do not resume an inertial gesture with a new pointer: one gesture is one
+    // source/history commit, after the final restriction correction has settled.
+    inertia: constrained ? { allowResume: false } : false,
+    modifiers: constrained ? [window.interact.modifiers.restrictRect({
+      restriction: handle
+        ? () => (gesture?.live || frame.contentDocument.querySelector('[' + marker + '="' + selectedKey + '"]'))?.parentElement
+        : 'parent',
+      endOnly: true,
+    })] : [],
+    autoScroll: { container: frame.contentWindow, margin: 35, speed: 300 },
+  }
+}
 function registerNodes() {
   for (const node of [source.documentElement, ...source.documentElement.querySelectorAll('*')]) {
     if (!nodeKeys.has(node)) {
@@ -85,9 +106,11 @@ function serialize() {
   )
 }
 function update() {
-  $('undo').disabled = busy || position <= 0
-  $('redo').disabled = busy || position >= history.length - 1
-  $('save').disabled = busy || !ready || serialize() === saved
+  const locked = busy || !!gesture
+  $('dragMode').disabled = locked || !ready
+  $('undo').disabled = locked || position <= 0
+  $('redo').disabled = locked || position >= history.length - 1
+  $('save').disabled = locked || !ready || serialize() === saved
   $('dirty').textContent = ready
     ? serialize() === saved
       ? '工作区已同步'
@@ -216,7 +239,7 @@ function select(key) {
       'position:fixed;pointer-events:none;border:2px solid #2563eb;background:rgba(37,99,235,.06);z-index:2147483647;box-sizing:border-box;touch-action:none'
     frame.contentDocument.body.append(highlight)
     const handle = frame.contentDocument.createElement('button')
-    handle.textContent = $('dragMode').value === 'free' ? '自由拖动' : '移动模块'
+    handle.textContent = dragHandleLabel()
     handle.dataset.move = '1'
     handle.style.cssText =
       'position:absolute;top:-27px;left:-2px;height:25px;background:#2563eb;color:white;border:0;border-radius:4px;font:12px system-ui;pointer-events:auto;cursor:move;touch-action:none;white-space:nowrap'
@@ -261,7 +284,7 @@ function positionHighlight(live) {
   })
 }
 function startFreeDrag(key = selectedKey) {
-  if (!ready || busy || !selectable(nodes.get(key))) return false
+  if (!ready || busy || gesture || !selectable(nodes.get(key))) return false
   select(key)
   const live = frame.contentDocument.querySelector('[' + marker + '="' + selectedKey + '"]')
   if (!live || !selected) return false
@@ -284,6 +307,7 @@ function startFreeDrag(key = selectedKey) {
     inverse, dx: 0, dy: 0, moved: false,
   }
   suppressClick = true
+  update()
   return true
 }
 function moveFreeDrag(event) {
@@ -295,7 +319,7 @@ function moveFreeDrag(event) {
   gesture.value = dragTranslation(gesture.translate, gesture.dx, gesture.dy)
   applyFreeDrag(gesture.live, gesture.value, gesture.inline)
   positionHighlight(gesture.live)
-  status(`自由移动：X ${Math.round(gesture.dx)}px / Y ${Math.round(gesture.dy)}px；松开后更新原型代码`)
+  status(`${$('dragMode').value === 'parent' ? '父容器内移动' : '自由移动'}：X ${Math.round(gesture.dx)}px / Y ${Math.round(gesture.dy)}px；拖动结束后更新原型代码`)
 }
 function endFreeDrag() {
   const action = gesture
@@ -306,15 +330,15 @@ function endFreeDrag() {
       () => action.node,
     )
   } else if (ready && selectedKey) select(selectedKey)
+  update()
   setTimeout(() => { suppressClick = false }, 0)
 }
 function attachDirectDrag(doc) {
   if (!window.interact) return
   directInteraction = window.interact('body [' + marker + ']', { context: doc })
     .draggable({
-      enabled: $('dragMode').value === 'free',
-      inertia: false,
-      autoScroll: { container: frame.contentWindow, margin: 35, speed: 300 },
+      enabled: positionDragMode(),
+      ...dragOptions(),
       listeners: {
         start(event) {
           if (!startFreeDrag(event.target.getAttribute(marker))) event.interaction.stop()
@@ -352,14 +376,17 @@ function attachInteraction(highlight) {
     .interact(highlight, { context: doc })
     .draggable({
       allowFrom: '[data-move]',
+      ...dragOptions(true),
       listeners: {
-        start() {
-          if ($('dragMode').value === 'free') {
-            startFreeDrag()
+        start(event) {
+          if (positionDragMode()) {
+            if (!startFreeDrag()) event.interaction.stop()
             return
           }
+          if (!ready || busy || gesture) { event.interaction.stop(); return }
           gesture = { node: selected, key: selectedKey, target: null, placement: null }
           suppressClick = true
+          update()
         },
         move(event) {
           if (gesture?.kind === 'free') { moveFreeDrag(event); return }
@@ -409,6 +436,7 @@ function attachInteraction(highlight) {
             }
           }
           if (ready && selectedKey) select(selectedKey)
+          update()
           setTimeout(() => {
             suppressClick = false
           }, 0)
@@ -426,7 +454,7 @@ function attachInteraction(highlight) {
       },
       listeners: {
         start(event) {
-          if (!ready || busy || !selected) { event.interaction.stop(); return }
+          if (!ready || busy || gesture || !selected) { event.interaction.stop(); return }
           const live = doc.querySelector('[' + marker + '="' + selectedKey + '"]')
           const style = frame.contentWindow.getComputedStyle(live)
           const rect = live.getBoundingClientRect()
@@ -445,6 +473,7 @@ function attachInteraction(highlight) {
             moved: false,
           }
           suppressClick = true
+          update()
         },
         move(event) {
           if (gesture?.kind !== 'resize') return
@@ -470,6 +499,7 @@ function attachInteraction(highlight) {
               },
               () => action.node,
             )
+          update()
           setTimeout(() => {
             suppressClick = false
           }, 0)
@@ -510,7 +540,7 @@ frame.addEventListener('load', () => {
   interactionStyle.textContent =
     'html[data-qp-free-drag] body *{touch-action:none!important;user-select:none!important;-webkit-user-drag:none!important}'
   doc.head.append(interactionStyle)
-  doc.documentElement.toggleAttribute('data-qp-free-drag', $('dragMode').value === 'free')
+  doc.documentElement.toggleAttribute('data-qp-free-drag', positionDragMode())
   attachDirectDrag(doc)
   doc.addEventListener('dragstart', (event) => event.preventDefault(), true)
   doc.addEventListener('keydown', shortcut, true)
@@ -559,12 +589,16 @@ frame.addEventListener('load', () => {
 })
 $('dragMode').onchange = () => {
   if (gesture) return
-  const free = $('dragMode').value === 'free'
-  directInteraction?.draggable({ enabled: free })
-  frame.contentDocument.documentElement.toggleAttribute('data-qp-free-drag', free)
+  directInteraction?.draggable({ enabled: positionDragMode(), ...dragOptions() })
+  interaction?.draggable(dragOptions(true))
+  frame.contentDocument.documentElement.toggleAttribute('data-qp-free-drag', positionDragMode())
   const handle = frame.contentDocument.querySelector('#qp-manual-highlight [data-move]')
-  if (handle) handle.textContent = free ? '自由拖动' : '移动模块'
-  status(free ? '自由拖动：直接拖动元素，位移将写入原型 HTML 样式' : '结构重排：拖动“移动模块”手柄放到模块前后或容器内')
+  if (handle) handle.textContent = dragHandleLabel()
+  status({
+    free: '自由拖动：直接拖动元素，位移将写入原型 HTML 样式',
+    parent: '父容器内拖拽：支持惯性移动，结束时将元素完整限制在父容器内；位移写入原型 HTML 样式',
+    reorder: '结构重排：拖动“移动模块”手柄放到模块前后或容器内',
+  }[$('dragMode').value])
 }
 $('applyText').onclick = () => {
   if (editableText(selected))
