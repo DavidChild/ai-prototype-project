@@ -2,6 +2,7 @@ import { nanoid } from 'nanoid'
 import { db, type SourceDoc, type StoredAsset } from './db'
 import type { Project } from '@/types/project'
 import type { Page, PageVersion, PageVersionSource } from '@/types/page'
+import { movePageTree } from '@/utils/pageTree'
 
 const MAX_VERSIONS_PER_PAGE = 20
 
@@ -133,6 +134,57 @@ export const projectRepo = {
 }
 
 export const pageRepo = {
+  /** Copy only this page and its current saved content, with independent IDs and history. */
+  async copy(projectId: string, pageId: string, name: string): Promise<{
+    page: Page
+    pages: Page[]
+    version?: PageVersion
+    updatedAt: number
+  }> {
+    const trimmed = name.trim()
+    if (!trimmed) throw new Error('页面名不能为空')
+    return db.transaction('rw', [db.pages, db.pageVersions, db.projects], async () => {
+      const project = await db.projects.get(projectId)
+      if (!project) throw new Error('项目不存在，请刷新后重试')
+      const source = await db.pages.get(pageId)
+      if (!source || source.projectId !== projectId) throw new Error('原页面不存在或不属于当前项目')
+      if (source.spec.groupOnly) throw new Error('请选择普通页面进行复制')
+      if (source.genStatus === 'queued' || source.genStatus === 'generating')
+        throw new Error('原页面正在生成或排队，请停止后再复制')
+      const current = source.currentVersionId ? await db.pageVersions.get(source.currentVersionId) : undefined
+      if (source.currentVersionId && (!current || current.pageId !== source.id))
+        throw new Error('原页面版本不存在或不匹配，请刷新后重试')
+      const now = Date.now()
+      const id = nanoid()
+      const version: PageVersion | undefined = current ? {
+        id: nanoid(), pageId: id, versionNumber: 1, html: current.html,
+        source: 'copy', feedbackText: `复制自「${source.spec.name}」`, createdAt: now,
+      } : undefined
+      const copy: Page = {
+        id,
+        projectId,
+        spec: { ...source.spec, id, name: trimmed, blocks: [...source.spec.blocks] },
+        sortOrder: 0,
+        genStatus: version ? 'done' : 'idle',
+        currentVersionId: version?.id,
+        updatedAt: now,
+      }
+      const existing = await pageRepo.listByProject(projectId)
+      const ordered = movePageTree([...existing, copy], id, source.id, 'after')
+      const page = ordered.find((item) => item.id === id)!
+      await db.pages.add(page)
+      if (version) await db.pageVersions.add(version)
+      for (const item of ordered) {
+        if (item.id !== id) await db.pages.update(item.id, { sortOrder: item.sortOrder })
+      }
+      await db.projects.update(projectId, {
+        updatedAt: now,
+        ...(project.analysis ? { analysis: { ...project.analysis, pages: ordered.map((item) => item.spec) } } : {}),
+      })
+      return { page, pages: ordered, version, updatedAt: now }
+    })
+  },
+
   /** 只更新名称，不覆盖层级、生成状态或版本引用。 */
   async rename(id: string, name: string): Promise<void> {
     const trimmed = name.trim()
@@ -244,11 +296,22 @@ export const versionRepo = {
     pageId: string,
     baseline: string,
     html: string,
+    feedbackText: string,
+    submissionId?: string,
   ): Promise<PageVersion> {
+    const note = feedbackText?.trim()
+    if (!note || note.length > 500) throw new Error('请输入 1–500 字的版本修改备注')
     return db.transaction('rw', [db.pages, db.pageVersions], async () => {
       const page = await db.pages.get(pageId)
       if (!page || page.projectId !== projectId || page.spec.groupOnly)
         throw new Error('原页面已删除或不属于此迭代')
+      const versionId = submissionId ? 'layrr-' + submissionId : undefined
+      const imported = versionId ? await db.pageVersions.get(versionId) : undefined
+      if (imported) {
+        if (imported.pageId !== pageId || imported.html !== html || imported.feedbackText !== note)
+          throw new Error('提交信息与已保存版本不一致')
+        return imported
+      }
       if (page.currentVersionId !== baseline)
         throw new Error('页面已产生新版本，请重新打开 Layrr，避免覆盖其他修改')
       if (page.genStatus === 'queued' || page.genStatus === 'generating')
@@ -256,7 +319,7 @@ export const versionRepo = {
       const original = await db.pageVersions.get(baseline)
       if (!original || original.pageId !== pageId) throw new Error('原始版本不匹配')
       if (!html.trim() || original.html === html) throw new Error('没有需要保存的修改')
-      return versionRepo.add(pageId, html, 'layrr', 'Layrr 局部修改')
+      return versionRepo.add(pageId, html, 'layrr', note, versionId)
     })
   },
   async listByPage(pageId: string): Promise<PageVersion[]> {
@@ -274,11 +337,12 @@ export const versionRepo = {
     html: string,
     source: PageVersionSource,
     feedbackText?: string,
+    versionId?: string,
   ): Promise<PageVersion> {
     return db.transaction('rw', [db.pages, db.pageVersions], async () => {
       const existing = await db.pageVersions.where('pageId').equals(pageId).sortBy('versionNumber')
       const version: PageVersion = {
-        id: nanoid(),
+        id: versionId ?? nanoid(),
         pageId,
         versionNumber: (existing.at(-1)?.versionNumber ?? 0) + 1,
         html,

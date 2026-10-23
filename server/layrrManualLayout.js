@@ -44,6 +44,70 @@ export function keyboardCommand(event) {
   return null
 }
 
+export function normalizeGridStep(value) {
+  const number = Number(value)
+  return String(value).trim() && Number.isFinite(number)
+    ? Math.min(500, Math.max(1, Math.round(number)))
+    : 30
+}
+
+export function automaticGridStep(style) {
+  const pixels = (value) => /^\d+(?:\.\d+)?px$/.test(value || '') ? parseFloat(value) : 0
+  const gaps = [style?.rowGap, style?.columnGap].map(pixels).filter((value) => value > 0)
+  return gaps.length ? normalizeGridStep(Math.min(...gaps)) : 30
+}
+
+export function directionalSibling(rect, candidates, direction) {
+  if (!['left', 'right', 'up', 'down'].includes(direction)) return null
+  const horizontal = direction === 'left' || direction === 'right'
+  const sign = direction === 'left' || direction === 'up' ? -1 : 1
+  const center = { x: (rect.left + rect.right) / 2, y: (rect.top + rect.bottom) / 2 }
+  let closest = null, best = null
+  for (const candidate of candidates) {
+    const next = candidate.rect
+    if (!(next.right > next.left && next.bottom > next.top)) continue
+    const dx = (next.left + next.right) / 2 - center.x
+    const dy = (next.top + next.bottom) / 2 - center.y
+    if ((horizontal ? dx : dy) * sign <= 0.5) continue
+    const crossGap = horizontal
+      ? Math.max(rect.top - next.bottom, next.top - rect.bottom, 0)
+      : Math.max(rect.left - next.right, next.left - rect.right, 0)
+    const edgeGap = horizontal
+      ? Math.max(rect.left - next.right, next.left - rect.right, 0)
+      : Math.max(rect.top - next.bottom, next.top - rect.bottom, 0)
+    // Prefer the same visual row/column, then the nearest edge and center.
+    const score = [crossGap > 0 ? 1 : 0, Math.hypot(edgeGap, crossGap), Math.hypot(dx, dy)]
+    const better = !best || score.some((value, index) =>
+      value < best[index] && score.slice(0, index).every((previous, i) => previous === best[i]))
+    if (better) { closest = candidate.key; best = score }
+  }
+  return closest
+}
+
+export function nthDirectionalSibling(rect, candidates, direction, count = 1) {
+  if (!Number.isInteger(count) || count < 1 || count > candidates.length) return null
+  let current = rect, remaining = candidates.slice(), key = null
+  for (let step = 0; step < count; step++) {
+    key = directionalSibling(current, remaining, direction)
+    const next = remaining.find((candidate) => candidate.key === key)
+    if (!next) return null
+    current = next.rect
+    remaining = remaining.filter((candidate) => candidate !== next)
+  }
+  return key
+}
+
+export function siblingSwapTranslations(first, second) {
+  const dx = second.rect.left - first.rect.left
+  const dy = second.rect.top - first.rect.top
+  const translate = (state, sign) => {
+    const { a, b, c, d } = state.inverse
+    return dragTranslation(state.translate, sign * (a * dx + c * dy), sign * (b * dx + d * dy))
+  }
+  // Compute both before editing either element so an invalid geometry is atomic.
+  return [translate(first, 1), translate(second, -1)]
+}
+
 // Keep the original transform/rotate/scale and percentage-based translation.
 // Individual CSS translate composes with them instead of replacing transform.
 export function dragTranslation(translate, dx, dy) {
@@ -84,13 +148,23 @@ export function resizeBox(initial, delta, edges, minimum = 8) {
   }
 }
 
-export function applyElementSize(node, box, inline = false) {
-  for (const [name, value] of Object.entries({
-    width: box.width + 'px', height: box.height + 'px',
+export function applyElementDimension(node, dimension, value, inline = false) {
+  if (!['width', 'height'].includes(dimension)) throw new Error('无效尺寸属性')
+  if (!value) {
+    node.style.removeProperty(dimension)
+    return
+  }
+  for (const [name, styleValue] of Object.entries({
+    [dimension]: value,
     'box-sizing': 'border-box',
-    // Flex/grid and original min/max rules must not silently override the gesture.
-    'min-width': '0px', 'min-height': '0px', 'max-width': 'none', 'max-height': 'none',
+    // Match drag resizing: existing min/max and flex rules must not mask edits.
+    ['min-' + dimension]: '0px', ['max-' + dimension]: 'none',
     'flex-shrink': '0', 'flex-grow': '0', 'flex-basis': 'auto',
-  })) node.style.setProperty(name, value, 'important')
+  })) node.style.setProperty(name, styleValue, 'important')
   if (inline) node.style.setProperty('display', 'inline-block', 'important')
+}
+
+export function applyElementSize(node, box, inline = false) {
+  applyElementDimension(node, 'width', box.width + 'px', inline)
+  applyElementDimension(node, 'height', box.height + 'px', inline)
 }

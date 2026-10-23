@@ -13,6 +13,47 @@ import { gridstackEditorShell } from './gridstackEditor'
 const require = createRequire(import.meta.url)
 const LIMIT = 5 * 1024 * 1024
 type Edit = { instruction: string; selector: string; elements?: { selector: string }[] }
+type Submission = { id: string; html: string; feedbackText: string }
+type SubmissionResult = { id: string; success: boolean; message: string; revision: string; feedbackText: string }
+function submissionFor(input: Record<string, unknown>, html: string): Submission | null {
+  if (input.submit !== true) return null
+  const feedbackText = typeof input.feedbackText === 'string' ? input.feedbackText.trim() : ''
+  if (!feedbackText || feedbackText.length > 500) throw new Error('请输入 1–500 字的版本修改备注')
+  const id = input.submissionId ?? randomBytes(12).toString('hex')
+  if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{16,100}$/.test(id)) throw new Error('无效的提交标识')
+  return { id, html, feedbackText }
+}
+async function saveDocument(session: {
+  file: string
+  writing: boolean
+  job: unknown
+  submission: Submission | null
+  submissionResults: Map<string, SubmissionResult>
+}, input: Record<string, unknown>) {
+  const submission = submissionFor(input, typeof input.html === 'string' ? input.html : '')
+  const completed = submission && session.submissionResults.get(submission.id)
+  if (completed) {
+    if (completed.revision !== htmlRevision(submission.html) || completed.feedbackText !== submission.feedbackText)
+      throw new Error('提交信息与已保存记录不一致')
+    return { ok: true, revision: completed.revision, submissionId: submission.id }
+  }
+  if (submission && session.submission?.id === submission.id) {
+    if (session.submission.html !== submission.html || session.submission.feedbackText !== submission.feedbackText)
+      throw new Error('提交信息与正在保存的内容不一致')
+    return { ok: true, revision: htmlRevision(submission.html), submissionId: submission.id }
+  }
+  if (session.writing || session.job || session.submission) throw new Error('已有修改进行中，请稍候或重新载入')
+  session.writing = true
+  try {
+    const current = await readFile(session.file, 'utf8')
+    const html = validateManualSave(input, current, false)
+    await writeFile(session.file, html, 'utf8')
+    session.submission = submission
+    return { ok: true, revision: htmlRevision(html), submissionId: submission?.id }
+  } finally {
+    session.writing = false
+  }
+}
 async function body(req: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = []
   let size = 0
@@ -42,6 +83,8 @@ export function layrrBridgePlugin(): Plugin {
           pageId: string
           baseline: string
           writing: boolean
+          submission: Submission | null
+          submissionResults: Map<string, SubmissionResult>
           job: { id: string; edit: Edit; delivered: boolean } | null
           lastResult: { success: boolean; message: string; timestamp: number } | null
           sockets: Set<WebSocket>
@@ -178,32 +221,25 @@ export function layrrBridgePlugin(): Plugin {
                   }
                   if (previewReq.method === 'GET') {
                     const html = await readFile(file, 'utf8')
-                    json(previewRes, { html, revision: htmlRevision(html) })
+                    const submissionId = new URL(previewReq.url!, 'http://localhost').searchParams.get('submission')
+                    json(previewRes, {
+                      html, revision: htmlRevision(html), pendingSubmissionId: session.submission?.id,
+                      submissionStatus: submissionId ? session.submissionResults.get(submissionId) : undefined,
+                    })
                     return
                   }
                   if (previewReq.method !== 'POST') {
                     json(previewRes, { error: 'Method not allowed' }, 405)
                     return
                   }
-                  if (session.writing || session.job) {
-                    json(previewRes, { error: '已有修改进行中，请稍候或重新载入' }, 409)
-                    return
-                  }
-                  session.writing = true
                   try {
-                    const input = await body(previewReq)
-                    const current = await readFile(file, 'utf8')
-                    const html = validateManualSave(input, current, Boolean(session.job))
-                    await writeFile(file, html, 'utf8')
-                    json(previewRes, { ok: true, revision: htmlRevision(html) })
+                    json(previewRes, await saveDocument(session, await body(previewReq)))
                   } catch (error) {
                     json(
                       previewRes,
                       { error: error instanceof Error ? error.message : '手动保存失败' },
                       409,
                     )
-                  } finally {
-                    session.writing = false
                   }
                   return
                 }
@@ -262,7 +298,7 @@ export function layrrBridgePlugin(): Plugin {
                   try {
                     const edit = JSON.parse(raw.toString()) as Edit & { type: string }
                     if (edit.type !== 'edit-request') return
-                    if (session.job || session.writing) throw new Error('已有修改进行中，请稍候')
+                    if (session.job || session.writing || session.submission) throw new Error('已有修改进行中，请稍候')
                     if (
                       typeof edit.instruction !== 'string' ||
                       !edit.instruction.trim() ||
@@ -297,6 +333,8 @@ export function layrrBridgePlugin(): Plugin {
               pageId: input.pageId,
               baseline: input.baseline,
               writing: false,
+              submission: null,
+              submissionResults: new Map(),
               job: null,
               lastResult: null,
               sockets,
@@ -307,8 +345,7 @@ export function layrrBridgePlugin(): Plugin {
                 server.closeAllConnections()
               },
             })
-            const editorOrigin = typeof origin === 'string' ? origin : `http://${req.headers.host}`
-            json(res, { id, url, file, editorUrl: `${editorOrigin}/tmagic-editor.html?workspace=${id}` })
+            json(res, { id, url, file, editorUrl: url + 'manual' })
             return
           }
           const session = sessions.get(parts[0] ?? '')
@@ -319,23 +356,18 @@ export function layrrBridgePlugin(): Plugin {
           if (parts[1] === 'document') {
             if (req.method === 'GET') {
               const html = await readFile(session.file, 'utf8')
-              json(res, { html, revision: htmlRevision(html) })
+              const submissionId = new URL(req.url!, 'http://localhost').searchParams.get('submission')
+              json(res, {
+                html, revision: htmlRevision(html), pendingSubmissionId: session.submission?.id,
+                submissionStatus: submissionId ? session.submissionResults.get(submissionId) : undefined,
+              })
               return
             }
             if (req.method === 'POST') {
-              if (session.writing || session.job) {
-                json(res, { error: '已有修改进行中，请稍候' }, 409)
-                return
-              }
-              session.writing = true
               try {
-                const input = await body(req)
-                const current = await readFile(session.file, 'utf8')
-                const html = validateManualSave(input, current, Boolean(session.job))
-                await writeFile(session.file, html, 'utf8')
-                json(res, { ok: true, revision: htmlRevision(html) })
-              } finally {
-                session.writing = false
+                json(res, await saveDocument(session, await body(req)))
+              } catch (error) {
+                json(res, { error: error instanceof Error ? error.message : '保存失败' }, 409)
               }
               return
             }
@@ -351,22 +383,48 @@ export function layrrBridgePlugin(): Plugin {
           if (req.method === 'GET') {
             const job = session.job && !session.job.delivered ? session.job : null
             if (job) job.delivered = true
-            json(res, { html: await readFile(session.file, 'utf8'), job })
+            json(res, { html: await readFile(session.file, 'utf8'), job, submission: session.submission })
             return
           }
           if (req.method === 'POST') {
             const input = await body(req)
+            if (typeof input.submissionId === 'string') {
+              if (session.submissionResults.has(input.submissionId)) {
+                json(res, { ok: true })
+                return
+              }
+              if (!session.submission || session.submission.id !== input.submissionId)
+                throw new Error('提交已失效，请重新提交')
+              const result = {
+                id: session.submission.id,
+                success: input.success === true,
+                message: String(input.message ?? '版本保存完成').slice(0, 500),
+                revision: htmlRevision(session.submission.html),
+                feedbackText: session.submission.feedbackText,
+              }
+              session.submissionResults.set(result.id, result)
+              if (session.submissionResults.size > 20)
+                session.submissionResults.delete(session.submissionResults.keys().next().value!)
+              session.submission = null
+              json(res, { ok: true })
+              return
+            }
             if (!session.job || input.jobId !== session.job.id) throw new Error('修改请求已失效')
             if (input.success === true) {
               if (typeof input.html !== 'string' || !input.html.trim())
                 throw new Error('修改内容为空')
               await writeFile(session.file, input.html, 'utf8')
+              session.submission = {
+                id: session.job.id,
+                html: input.html,
+                feedbackText: session.job.edit.instruction.trim().slice(0, 500),
+              }
             }
             session.lastResult = {
               success: input.success === true,
               message:
                 input.success === true
-                  ? '局部修改完成，请返回 QuickPage 确认保存'
+                  ? '局部修改完成，正在自动保存到页面历史'
                   : String(input.message ?? '修改失败').slice(0, 500),
               timestamp: Date.now(),
             }

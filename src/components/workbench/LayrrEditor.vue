@@ -11,6 +11,11 @@ const message = useMessage()
 const show = ref(false)
 const busy = ref(false)
 const working = ref(false)
+const saving = ref(false)
+const saveStatus = ref('等待在编辑窗口中提交修改')
+type Submission = { id: string; html: string; feedbackText: string }
+type SubmissionResult = { success: boolean; message: string }
+const submissionResults = new Map<string, SubmissionResult>()
 const workspace = ref<{
   id: string
   url: string
@@ -74,6 +79,8 @@ async function open() {
       label: project.name + ' / ' + (project.iteration ?? 'v1.0') + ' / ' + page.spec.name,
     }
     html.value = original
+    submissionResults.clear()
+    saveStatus.value = '等待在编辑窗口中提交修改'
     show.value = true
     if (popup) popup.location.href = result.url + 'manual'
     void poll()
@@ -91,9 +98,11 @@ async function poll() {
     const data = (await api('/' + session.id)) as {
       html: string
       job: { id: string; edit: LayrrEdit } | null
+      submission: Submission | null
     }
     if (workspace.value !== session || disposed) return
     html.value = data.html
+    if (data.submission) await saveSubmission(data.submission)
     if (data.job) {
       working.value = true
       controller = new AbortController()
@@ -124,42 +133,54 @@ async function poll() {
       }
     }
   } catch (error) {
-    if (!disposed) message.error(error instanceof Error ? error.message : '工作区连接中断')
-    return
+    if (!disposed) saveStatus.value = (error instanceof Error ? error.message : '工作区连接中断') + '，正在重试连接'
   }
   if (!disposed && workspace.value === session) timer = setTimeout(() => void poll(), 1000)
 }
-async function save() {
+async function saveSubmission(submission: Submission) {
   const session = workspace.value
-  if (!session || working.value || busy.value) return
-  busy.value = true
-  const savingHtml = html.value
-  try {
-    const version = await versionRepo.importLayrr(
-      session.projectId,
-      session.pageId,
-      session.baseline,
-      savingHtml,
-    )
-    if (wb.project?.id === session.projectId) {
-      const page = wb.pages.find((p) => p.id === session.pageId)
-      if (page) {
-        page.currentVersionId = version.id
-        page.genStatus = 'done'
-        page.errorMessage = undefined
+  if (!session || disposed) return
+  saving.value = true
+  saveStatus.value = '正在自动保存到页面历史…'
+  let result = submissionResults.get(submission.id)
+  if (!result) {
+    try {
+      const version = await versionRepo.importLayrr(
+        session.projectId,
+        session.pageId,
+        session.baseline,
+        submission.html,
+        submission.feedbackText,
+        submission.id,
+      )
+      session.baseline = version.id
+      session.original = submission.html
+      if (wb.project?.id === session.projectId) {
+        const page = wb.pages.find((p) => p.id === session.pageId)
+        if (page) {
+          page.currentVersionId = version.id
+          page.genStatus = 'done'
+          page.errorMessage = undefined
+        }
+        wb.htmlByPage.set(session.pageId, submission.html)
+        const versions = await versionRepo.listByPage(session.pageId).catch(() => undefined)
+        if (versions && wb.project?.id === session.projectId && wb.selectedPageId === session.pageId)
+          wb.versions = versions
       }
-      wb.htmlByPage.set(session.pageId, savingHtml)
-      const versions = await versionRepo.listByPage(session.pageId)
-      if (wb.project?.id === session.projectId && wb.selectedPageId === session.pageId)
-        wb.versions = versions
+      result = { success: true, message: `已保存为 v${version.versionNumber}，可继续编辑并写入AI工作区` }
+    } catch (error) {
+      result = { success: false, message: error instanceof Error ? error.message : '保存失败' }
     }
-    session.baseline = version.id
-    session.original = savingHtml
-    message.success('已保存到原项目迭代的页面历史，可继续编辑或回滚')
-  } catch (error) {
-    message.error(error instanceof Error ? error.message : '保存失败')
+    submissionResults.set(submission.id, result)
+    if (submissionResults.size > 20) submissionResults.delete(submissionResults.keys().next().value!)
+  }
+  try {
+    await api('/' + session.id, 'POST', { submissionId: submission.id, ...result })
+    saveStatus.value = result.message
+    if (result.success) message.success(result.message)
+    else message.error(result.message)
   } finally {
-    busy.value = false
+    saving.value = false
   }
 }
 function close() {
@@ -197,35 +218,23 @@ onBeforeUnmount(() => {
     <n-space vertical>
       <n-text>{{ workspace?.label }}</n-text>
       <n-alert type="info" :bordered="false"
-        >默认打开最初的手动编辑模式，直接载入当前页面 HTML，不调用 AI。点选元素可调整文字、图片、样式和布局，支持拖动、缩放、撤销与重做。完成后先点击“写入工作区”，再回到此处确认保存到当前迭代。若新窗口被浏览器拦截，请点击下方链接打开。请保持本窗口打开。</n-alert
+        >手动编辑直接载入当前页面 HTML，支持拖动、缩放、撤销与重做。点击“写入AI工作区”并填写修改备注后，会自动保存到当前迭代的页面历史，版本号自动生成，无需再次确认。可在手动编辑窗口继续修改、重复提交。请保持本窗口打开；若新窗口被拦截，请允许本站弹出窗口后重新打开局部编辑。</n-alert
       >
       <n-text depth="3">{{
         working
           ? '正在使用当前服务商生成局部补丁…'
-          : changed
-            ? '工作区有修改，确认效果后保存到页面历史'
-            : '等待在手动编辑窗口中提交修改'
+          : saving
+            ? '正在自动保存到页面历史…'
+            : saveStatus
       }}</n-text>
       <n-text depth="3" style="font-size: 11px; overflow-wrap: anywhere"
         >本地文件：{{ workspace?.file }}</n-text
       >
-      <a v-if="workspace" :href="workspace.url + 'manual'" target="_blank" rel="noopener noreferrer"
-        >打开手动编辑工作区（不调用 AI）</a
-      >
-      <a v-if="workspace" :href="workspace.url + 'grid'" target="_blank" rel="noopener noreferrer"
-        >打开独立网格编辑（GridStack，先转换预览）</a
-      >
-      <a v-if="workspace" :href="workspace.url" target="_blank" rel="noopener noreferrer"
-        >打开 Layrr AI 局部编辑</a
-      >
-      <n-text depth="3">未确认的修改不会写入数据库；历史回滚请使用 QuickPage 的“版本”页签。</n-text>
+      <n-text depth="3">{{ changed ? '工作区有修改，请在编辑窗口填写备注并提交。' : '已提交的修改保存在页面历史中；回滚请使用“版本”页签。' }}</n-text>
     </n-space>
     <template #footer
       ><n-space justify="end">
-        <n-button :disabled="busy" @click="close">关闭工作区（未保存修改不导入）</n-button>
-        <n-button type="primary" :disabled="!changed || working" :loading="busy" @click="save"
-          >确认保存到当前迭代</n-button
-        >
+        <n-button :disabled="busy || saving || working" @click="close">关闭工作区</n-button>
       </n-space></template
     >
   </n-modal>

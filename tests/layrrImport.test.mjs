@@ -20,23 +20,46 @@ test('Layrr import is bound to original iteration and baseline; conflicts never 
     })
     const base = await versionRepo.add('page', '<p>base</p>', 'generate')
     await assert.rejects(
-      versionRepo.importLayrr('iteration-b', 'page', base.id, '<p>wrong</p>'),
+      versionRepo.importLayrr('iteration-b', 'page', base.id, '<p>wrong</p>', '调整文字'),
       /不属于/,
     )
-    const edited = await versionRepo.importLayrr('iteration-a', 'page', base.id, '<p>edited</p>')
+    for (const note of ['', '   ', 'a'.repeat(501)]) {
+      await assert.rejects(
+        versionRepo.importLayrr('iteration-a', 'page', base.id, '<p>edited</p>', note),
+        /版本修改备注/,
+      )
+    }
+    const edited = await versionRepo.importLayrr('iteration-a', 'page', base.id, '<p>edited</p>', '  调整文字  ', 'first-submission')
     assert.equal(edited.source, 'layrr')
     assert.equal(edited.pageId, 'page')
+    assert.equal(edited.feedbackText, '调整文字')
+    assert.equal(edited.versionNumber, base.versionNumber + 1)
+    const retried = await versionRepo.importLayrr('iteration-a', 'page', base.id, '<p>edited</p>', '调整文字', 'first-submission')
+    assert.equal(retried.id, edited.id)
     await assert.rejects(
-      versionRepo.importLayrr('iteration-a', 'page', base.id, '<p>stale</p>'),
+      versionRepo.importLayrr('iteration-b', 'page', base.id, '<p>edited</p>', '调整文字', 'first-submission'),
+      /不属于/,
+    )
+    await assert.rejects(
+      versionRepo.importLayrr('iteration-a', 'page', base.id, '<p>different</p>', '调整文字', 'first-submission'),
+      /不一致/,
+    )
+    await assert.rejects(
+      versionRepo.importLayrr('iteration-a', 'page', base.id, '<p>stale</p>', '再次调整'),
       /新版本/,
     )
     assert.equal((await pageRepo.get('page')).currentVersionId, edited.id)
     await pageRepo.update('page', { genStatus: 'generating' })
     await assert.rejects(
-      versionRepo.importLayrr('iteration-a', 'page', edited.id, '<p>busy</p>'),
+      versionRepo.importLayrr('iteration-a', 'page', edited.id, '<p>busy</p>', '再次调整'),
       /仍在生成/,
     )
     assert.equal((await versionRepo.listByPage('page')).length, 2)
+    await pageRepo.update('page', { genStatus: 'done' })
+    const next = await versionRepo.importLayrr('iteration-a', 'page', edited.id, '<p>continued</p>', '继续调整间距', 'next-submission')
+    assert.equal(next.versionNumber, edited.versionNumber + 1)
+    assert.equal(next.feedbackText, '继续调整间距')
+    assert.equal((await pageRepo.get('page')).currentVersionId, next.id)
   } finally {
     await db.delete()
   }

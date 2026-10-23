@@ -1,11 +1,35 @@
 // Served only inside the isolated local workspace, never stored in prototype HTML.
 import { textSelection } from './manual-text.js'
 import { imageTarget, imageUrl, validateImageFile, replaceImage } from './manual-image.js'
-import { moveModule, keyboardCommand, dragTranslation, applyFreeDrag, resizeBox, applyElementSize } from './manual-layout.js'
+import { moveModule, keyboardCommand, dragTranslation, applyFreeDrag, resizeBox, applyElementSize, applyElementDimension, normalizeGridStep, automaticGridStep, nthDirectionalSibling, siblingSwapTranslations } from './manual-layout.js'
 import { recordDomChanges, applyDomChanges } from './manual-history.js'
 const base = location.pathname.slice(0, location.pathname.lastIndexOf('manual'))
 const $ = (id) => document.getElementById(id)
 const frame = $('canvas')
+const inspectorTabs = Array.from(document.querySelectorAll('.editor-tabs [role="tab"]'))
+function setInspectorTab(id) {
+  for (const tab of inspectorTabs) {
+    const active = tab.id === id
+    tab.setAttribute('aria-selected', String(active))
+    tab.tabIndex = active ? 0 : -1
+    $(tab.getAttribute('aria-controls')).hidden = !active
+  }
+}
+for (const [index, tab] of inspectorTabs.entries()) {
+  tab.onclick = () => setInspectorTab(tab.id)
+  tab.onkeydown = (event) => {
+    const next = {
+      ArrowLeft: (index + inspectorTabs.length - 1) % inspectorTabs.length,
+      ArrowRight: (index + 1) % inspectorTabs.length,
+      Home: 0,
+      End: inspectorTabs.length - 1,
+    }[event.key]
+    if (next === undefined) return
+    event.preventDefault()
+    setInspectorTab(inspectorTabs[next].id)
+    inspectorTabs[next].focus({ preventScroll: true })
+  }
+}
 let source,
   revision,
   saved,
@@ -25,6 +49,10 @@ let interaction,
   directInteraction,
   gesture = null,
   suppressClick = false
+let imageRequest = 0,
+  imagePending = false
+let pendingSubmission = null
+let retrySubmission = null
 function keyFor(node) {
   return node && nodeKeys.get(node)
 }
@@ -32,20 +60,51 @@ function positionDragMode() {
   return $('dragMode').value !== 'reorder'
 }
 function dragHandleLabel() {
-  return { free: '自由拖动', parent: '父容器内拖拽', reorder: '移动模块' }[$('dragMode').value]
+  return { free: '自由拖动', parent: '父容器内拖拽', grid: '容器网格拖拽' }[$('dragMode').value]
+}
+function gridStep() {
+  return normalizeGridStep($('gridSize').value)
+}
+function syncGridStep(live) {
+  if (gesture || !$('gridAuto').checked || !live?.parentElement) return
+  const next = String(automaticGridStep(frame.contentWindow.getComputedStyle(live.parentElement)))
+  if ($('gridSize').value === next) return
+  $('gridSize').value = next
+  if ($('dragMode').value === 'grid') status(`容器网格拖拽：自动步长 ${next}px，限制在父容器内`)
 }
 function dragOptions(handle = false) {
-  const constrained = $('dragMode').value === 'parent'
-  return {
-    // Do not resume an inertial gesture with a new pointer: one gesture is one
-    // source/history commit, after the final restriction correction has settled.
-    inertia: constrained ? { allowResume: false } : false,
-    modifiers: constrained ? [window.interact.modifiers.restrictRect({
+  const mode = $('dragMode').value
+  const snapped = mode === 'grid'
+  const constrained = mode === 'parent' || snapped
+  const modifiers = []
+  if (snapped) {
+    let step, snap
+    modifiers.push(window.interact.modifiers.snap({
+      // Read the current setting even when a new element is selected at dragstart.
+      targets: [(x, y) => {
+        const current = gridStep()
+        if (current !== step) {
+          step = current
+          snap = window.interact.snappers.grid({ x: step, y: step })
+        }
+        return snap(x, y)
+      }],
+      range: Infinity,
+      relativePoints: [{ x: 0, y: 0 }],
+    }))
+  }
+  if (constrained)
+    modifiers.push(window.interact.modifiers.restrictRect({
       restriction: handle
         ? () => (gesture?.live || frame.contentDocument.querySelector('[' + marker + '="' + selectedKey + '"]'))?.parentElement
         : 'parent',
       endOnly: true,
-    })] : [],
+    }))
+  return {
+    // Do not resume an inertial gesture with a new pointer: one gesture is one
+    // source/history commit, after the final restriction correction has settled.
+    inertia: constrained ? { allowResume: false } : false,
+    modifiers,
     autoScroll: { container: frame.contentWindow, margin: 35, speed: 300 },
   }
 }
@@ -73,6 +132,7 @@ function refreshSelection(key) {
   const node = nodes.get(key)
   if (node && source.documentElement.contains(node)) select(key)
   else {
+    imageRequest++
     selected = null
     selectedKey = null
     $('props').hidden = true
@@ -95,6 +155,71 @@ const blockedTags = new Set([
 function selectable(el) {
   return el && !blockedTags.has(el.tagName)
 }
+function attributeTargets() {
+  if (!selected || !source?.body?.contains(selected)) return []
+  if (!$('scopeSimilar').checked) return [selected]
+  const classes = Array.from(selected.classList).sort().join('\0')
+  return Array.from(source.body.getElementsByTagName(selected.tagName)).filter((element) =>
+    element.namespaceURI === selected.namespaceURI &&
+    Array.from(element.classList).sort().join('\0') === classes,
+  )
+}
+function updateAttributeScope() {
+  const locked = busy || !!gesture || !ready || imagePending
+  $('scopeSingle').disabled = $('scopeSimilar').disabled = locked || !selected
+  document.querySelectorAll('[data-nudge]').forEach((button) => {
+    button.disabled = busy || !ready || imagePending || !selected || !!gesture && gesture.kind !== 'nudge'
+  })
+  const similar = $('scopeSimilar').checked && !!selected
+  $('attributeScopeDetails').hidden = !similar
+  if (!similar) {
+    $('attributeScopeHint').textContent = '仅修改当前选中元素。'
+    return
+  }
+  const classes = Array.from(selected.classList).sort()
+  $('attributeScopeHint').textContent = `将应用到 ${attributeTargets().length} 个类似元素（含当前元素）`
+  $('attributeScopeTag').textContent = selected.localName
+  const classText = classes.length ? classes.join('\n') : '无 class'
+  if ($('attributeScopeClasses').textContent !== classText) $('attributeScopeClasses').textContent = classText
+}
+function commitAttributes(action, targets = attributeTargets(), skipped = 0) {
+  if (!ready || busy || gesture || !targets.length) return
+  if (commit(() => targets.forEach(action)) && $('scopeSimilar').checked)
+    status(`已应用到 ${targets.length} 个类似元素${skipped ? `；跳过 ${skipped} 个不可编辑文字的元素` : ''}，尚未写入工作区`)
+}
+function siblingContext() {
+  if (!selected?.parentElement || !ready) return null
+  const live = liveNodes.get(selected)
+  if (!live?.isConnected) return null
+  const candidates = []
+  for (const sibling of selected.parentElement.children) {
+    if (sibling === selected || !selectable(sibling)) continue
+    const element = liveNodes.get(sibling)
+    if (!element?.isConnected) continue
+    const visibility = frame.contentWindow.getComputedStyle(element).visibility
+    if (visibility === 'hidden' || visibility === 'collapse') continue
+    candidates.push({ key: keyFor(sibling), rect: element.getBoundingClientRect() })
+  }
+  return { rect: live.getBoundingClientRect(), candidates }
+}
+function siblingKey(direction, count = 1, context = siblingContext()) {
+  return context ? nthDirectionalSibling(context.rect, context.candidates, direction, count) : null
+}
+function swapCount() {
+  const value = Number($('swapSteps').value)
+  return Number.isFinite(value) ? Math.min(999, Math.max(1, Math.floor(value))) : 1
+}
+function updateSiblingButtons() {
+  const locked = busy || !!gesture || !ready
+  const context = !locked && siblingContext()
+  $('swapSteps').disabled = locked || !selected
+  document.querySelectorAll('[data-sibling]').forEach((button) => {
+    button.disabled = locked || !siblingKey(button.dataset.sibling, 1, context)
+  })
+  document.querySelectorAll('[data-swap]').forEach((button) => {
+    button.disabled = locked || !siblingKey(button.dataset.swap, swapCount(), context)
+  })
+}
 function status(message, error = false) {
   $('status').textContent = message
   $('status').dataset.error = String(error)
@@ -108,16 +233,22 @@ function serialize() {
 function update() {
   const locked = busy || !!gesture
   $('dragMode').disabled = locked || !ready
+  $('gridSettings').hidden = $('dragMode').value !== 'grid'
+  $('gridSize').disabled = locked || !ready || $('dragMode').value !== 'grid'
+  $('gridAuto').disabled = $('gridSize').disabled
+  updateSiblingButtons()
+  updateAttributeScope()
   $('undo').disabled = locked || position <= 0
   $('redo').disabled = locked || position >= history.length - 1
   $('save').disabled = locked || !ready || serialize() === saved
-  $('dirty').textContent = ready
+  $('dirty').textContent = pendingSubmission ? '正在保存版本…' : ready
     ? serialize() === saved
       ? '工作区已同步'
       : '有未写入修改'
     : '正在载入'
 }
 function render(key) {
+  imageRequest++
   if (ready) scrollPosition = { x: frame.contentWindow.scrollX, y: frame.contentWindow.scrollY }
   interaction?.unset()
   directInteraction?.unset()
@@ -140,11 +271,11 @@ function render(key) {
   update()
 }
 function commit(action, key = selectedKey) {
-  if (!ready || busy) return
+  if (!ready || busy) return false
   const beforeKey = selectedKey
   const changes = recordDomChanges(source.documentElement, action)
   const html = serialize()
-  if (html === history[position].html) return
+  if (html === history[position].html) return false
   registerNodes()
   const afterKey = typeof key === 'function' ? keyFor(key()) : key
   applyDomChanges(changes, 'after', liveFor)
@@ -155,6 +286,7 @@ function commit(action, key = selectedKey) {
   refreshSelection(afterKey)
   update()
   status('修改已预览，尚未写入工作区')
+  return true
 }
 function editableText(el) {
   return textSelection(el).editable
@@ -167,10 +299,16 @@ function select(key) {
     el = image
   }
   if (!selectable(el)) return
+  if (gesture?.kind === 'nudge' && selected !== el) finishNudge()
+  const sameSelection = selected === el
+  if (selected !== el) imageRequest++
   selected = el
   selectedKey = key
   const live = frame.contentDocument.querySelector('[' + marker + '="' + key + '"]')
   if (!live) return
+  syncGridStep(live)
+  updateSiblingButtons()
+  updateAttributeScope()
   const style = frame.contentWindow.getComputedStyle(live)
   $('props').hidden = false
   $('childPicker').hidden = true
@@ -208,7 +346,7 @@ function select(key) {
       ? '替换后转换为图片，保留原有尺寸与样式；可撤销恢复 SVG。'
       : '替换后可撤销，不调用 AI。'
   const text = textSelection(el)
-  $('text').value = text.value
+  if (!sameSelection || document.activeElement !== $('text')) $('text').value = text.value
   $('text').disabled = $('applyText').disabled = !editableText(el)
   $('textHint').textContent = editableText(el)
     ? '仅修改文字，保留图标和内部标签，不会插入 HTML。'
@@ -217,6 +355,7 @@ function select(key) {
       : '未找到可编辑文字，请选择具体文字元素。'
   document.querySelectorAll('[data-style]').forEach((input) => {
     const property = input.dataset.style
+    if (sameSelection && document.activeElement === input) return
     if (input.type === 'color') {
       const rgb = style.getPropertyValue(property).match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)/)
       input.value = rgb
@@ -278,16 +417,13 @@ function positionHighlight(live) {
   const highlight = frame.contentDocument.getElementById('qp-manual-highlight')
   if (!highlight || !live) return
   const rect = live.getBoundingClientRect()
+  highlight.querySelector('[data-move]').style.top = rect.top < 28 ? '2px' : '-27px'
   Object.assign(highlight.style, {
     left: rect.left + 'px', top: rect.top + 'px',
     width: rect.width + 'px', height: rect.height + 'px',
   })
 }
-function startFreeDrag(key = selectedKey) {
-  if (!ready || busy || gesture || !selectable(nodes.get(key))) return false
-  select(key)
-  const live = frame.contentDocument.querySelector('[' + marker + '="' + selectedKey + '"]')
-  if (!live || !selected) return false
+function elementPositionState(live) {
   const style = frame.contentWindow.getComputedStyle(live)
   // Pointer movement is in viewport pixels; translate uses the parent's axes.
   let matrix = new frame.contentWindow.DOMMatrix()
@@ -297,14 +433,145 @@ function startFreeDrag(key = selectedKey) {
       matrix = new frame.contentWindow.DOMMatrix(transform).multiply(matrix)
   }
   const inverse = matrix.inverse()
-  if (![inverse.a, inverse.b, inverse.c, inverse.d].every(Number.isFinite)) {
-    status('该元素的父级使用了不可逆变换，无法自由拖动', true)
+  if (![inverse.a, inverse.b, inverse.c, inverse.d].every(Number.isFinite))
+    throw new Error('该元素的父级使用了不可逆变换，无法移动')
+  return { translate: style.translate, inline: style.display === 'inline', inverse, rect: live.getBoundingClientRect() }
+}
+const nudgeDirections = { left: [-1, 0], right: [1, 0], up: [0, -1], down: [0, 1] }
+function startNudge(button, direction, inputKind, token) {
+  if (!ready || busy || gesture || imagePending || !selected || !nudgeDirections[direction]) return false
+  const targets = attributeTargets(), targetSet = new Set(targets)
+  let records
+  try {
+    records = targets.filter((element) => {
+      // Descendants already inherit a matched ancestor's viewport displacement.
+      for (let parent = element.parentElement; parent; parent = parent.parentElement)
+        if (targetSet.has(parent)) return false
+      return true
+    }).map((node) => {
+      const live = liveNodes.get(node)
+      if (!live?.isConnected) throw new Error('元素已改变，请重新选择后微调')
+      return { node, live, originalStyle: live.getAttribute('style'), ...elementPositionState(live) }
+    })
+  } catch (error) {
+    status(error.message, true)
     return false
   }
+  if (!records.length) return false
+  const action = gesture = {
+    kind: 'nudge', records, key: selectedKey, button, direction, inputKind, token,
+    count: targets.length, dx: 0, dy: 0, moved: false,
+  }
+  button.dataset.holding = 'true'
+  update()
+  stepNudge()
+  action.delay = setTimeout(() => {
+    if (gesture !== action) return
+    stepNudge()
+    if (gesture === action) action.repeat = setInterval(stepNudge, 40)
+  }, 300)
+  return gesture === action
+}
+function stepNudge() {
+  const action = gesture
+  if (action?.kind !== 'nudge') return
+  if (!ready || busy || action.records.some(({ node, live }) => !source.body.contains(node) || !live.isConnected)) {
+    finishNudge()
+    return
+  }
+  const [dx, dy] = nudgeDirections[action.direction]
+  action.dx += dx
+  action.dy += dy
+  for (const record of action.records) {
+    const { inverse } = record
+    record.value = dragTranslation(record.translate,
+      inverse.a * action.dx + inverse.c * action.dy,
+      inverse.b * action.dx + inverse.d * action.dy)
+    applyFreeDrag(record.live, record.value, record.inline)
+  }
+  action.moved = true
+  positionHighlight(liveNodes.get(selected))
+  status(`位置微调：${action.count} 个元素，X ${action.dx}px / Y ${action.dy}px`)
+}
+function finishNudge() {
+  const action = gesture
+  if (action?.kind !== 'nudge') return
+  clearTimeout(action.delay)
+  clearInterval(action.repeat)
+  gesture = null
+  delete action.button.dataset.holding
+  if (action.inputKind === 'pointer' && action.button.hasPointerCapture(action.token))
+    action.button.releasePointerCapture(action.token)
+  let committed = false
+  try {
+    if (action.moved && ready && !busy)
+      committed = commit(() => {
+        for (const record of action.records) applyFreeDrag(record.node, record.value, record.inline)
+      }, action.key)
+    if (committed)
+      status(`已微调 ${action.count} 个元素：X ${action.dx}px / Y ${action.dy}px，尚未写入AI工作区`)
+  } finally {
+    if (!committed)
+      for (const { live, originalStyle } of action.records) {
+        if (originalStyle === null) live.removeAttribute('style')
+        else live.setAttribute('style', originalStyle)
+      }
+    if (ready) positionHighlight(liveNodes.get(selected))
+    update()
+  }
+}
+document.querySelectorAll('[data-nudge]').forEach((button) => {
+  button.onpointerdown = (event) => {
+    if (event.button !== 0 || event.isPrimary === false) return
+    event.preventDefault()
+    button.focus({ preventScroll: true })
+    if (startNudge(button, button.dataset.nudge, 'pointer', event.pointerId))
+      button.setPointerCapture(event.pointerId)
+  }
+  button.onlostpointercapture = (event) => {
+    if (gesture?.kind === 'nudge' && gesture.inputKind === 'pointer' && gesture.token === event.pointerId)
+      finishNudge()
+  }
+  button.onkeydown = (event) => {
+    const direction = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' }[event.key] ||
+      ([' ', 'Enter'].includes(event.key) ? button.dataset.nudge : null)
+    if (!direction) return
+    event.preventDefault()
+    if (!event.repeat) startNudge(button, direction, 'keyboard', event.key)
+  }
+  button.onkeyup = (event) => {
+    if (gesture?.kind === 'nudge' && gesture.inputKind === 'keyboard' && gesture.token === event.key) {
+      event.preventDefault()
+      finishNudge()
+    }
+  }
+  button.onblur = () => {
+    if (gesture?.kind === 'nudge' && gesture.button === button) finishNudge()
+  }
+  // Assistive technology can activate buttons without pointer or key events.
+  button.onclick = (event) => {
+    event.preventDefault()
+    if (event.detail === 0 && !event.pointerType && startNudge(button, button.dataset.nudge, 'click')) finishNudge()
+  }
+})
+for (const type of ['pointerup', 'pointercancel'])
+  window.addEventListener(type, (event) => {
+    if (gesture?.kind === 'nudge' && gesture.inputKind === 'pointer' && gesture.token === event.pointerId)
+      finishNudge()
+  }, true)
+window.addEventListener('blur', finishNudge)
+document.addEventListener('visibilitychange', () => { if (document.hidden) finishNudge() })
+function startFreeDrag(key = selectedKey) {
+  if (!ready || busy || gesture || !selectable(nodes.get(key))) return false
+  select(key)
+  const live = frame.contentDocument.querySelector('[' + marker + '="' + selectedKey + '"]')
+  if (!live || !selected) return false
+  let state
+  try { state = elementPositionState(live) }
+  catch (error) { status(error.message, true); return false }
   gesture = {
     kind: 'free', node: selected, key: selectedKey, live,
-    translate: style.translate, inline: style.display === 'inline',
-    inverse, dx: 0, dy: 0, moved: false,
+    ...state, dx: 0, dy: 0, moved: false,
   }
   suppressClick = true
   update()
@@ -319,7 +586,8 @@ function moveFreeDrag(event) {
   gesture.value = dragTranslation(gesture.translate, gesture.dx, gesture.dy)
   applyFreeDrag(gesture.live, gesture.value, gesture.inline)
   positionHighlight(gesture.live)
-  status(`${$('dragMode').value === 'parent' ? '父容器内移动' : '自由移动'}：X ${Math.round(gesture.dx)}px / Y ${Math.round(gesture.dy)}px；拖动结束后更新原型代码`)
+  const modeLabel = { parent: '父容器内移动', grid: `容器网格移动（${gridStep()}px）`, free: '自由移动' }[$('dragMode').value]
+  status(`${modeLabel}：X ${Math.round(gesture.dx)}px / Y ${Math.round(gesture.dy)}px；拖动结束后更新原型代码`)
 }
 function endFreeDrag() {
   const action = gesture
@@ -336,6 +604,7 @@ function endFreeDrag() {
 function attachDirectDrag(doc) {
   if (!window.interact) return
   directInteraction = window.interact('body [' + marker + ']', { context: doc })
+    .styleCursor(false)
     .draggable({
       enabled: positionDragMode(),
       ...dragOptions(),
@@ -563,6 +832,7 @@ frame.addEventListener('load', () => {
       event.preventDefault()
       event.stopImmediatePropagation()
       if (editableText(selected)) {
+        setInspectorTab('attributesTab')
         $('text').focus()
         $('text').select()
       }
@@ -580,7 +850,10 @@ frame.addEventListener('load', () => {
   doc.addEventListener(
     'scroll',
     () => {
-      if (selectedKey && !gesture) select(selectedKey)
+      if (!selected || gesture) return
+      // Scrolling only changes geometry, never the inspector's pending input.
+      positionHighlight(liveNodes.get(selected))
+      updateSiblingButtons()
     },
     true,
   )
@@ -589,6 +862,7 @@ frame.addEventListener('load', () => {
 })
 $('dragMode').onchange = () => {
   if (gesture) return
+  syncGridStep(frame.contentDocument.querySelector('[' + marker + '="' + selectedKey + '"]'))
   directInteraction?.draggable({ enabled: positionDragMode(), ...dragOptions() })
   interaction?.draggable(dragOptions(true))
   frame.contentDocument.documentElement.toggleAttribute('data-qp-free-drag', positionDragMode())
@@ -597,22 +871,47 @@ $('dragMode').onchange = () => {
   status({
     free: '自由拖动：直接拖动元素，位移将写入原型 HTML 样式',
     parent: '父容器内拖拽：支持惯性移动，结束时将元素完整限制在父容器内；位移写入原型 HTML 样式',
-    reorder: '结构重排：拖动“移动模块”手柄放到模块前后或容器内',
+    grid: `容器网格拖拽：按 ${gridStep()}px 网格吸附，并限制在父容器内`,
   }[$('dragMode').value])
+  update()
+}
+$('gridSize').onchange = () => {
+  if (gesture || busy || !ready) return
+  $('gridSize').value = String(gridStep())
+  $('gridAuto').checked = false
+  if ($('dragMode').value === 'grid') status(`容器网格拖拽：已设置为 ${gridStep()}px 网格`)
+}
+$('gridSize').onkeydown = (event) => {
+  if (event.key === 'Enter') event.target.blur()
+}
+$('gridAuto').onchange = () => {
+  if (gesture || busy || !ready) return
+  syncGridStep(frame.contentDocument.querySelector('[' + marker + '="' + selectedKey + '"]'))
+  status(`容器网格拖拽：${$('gridAuto').checked ? '自动' : '手动'}步长 ${gridStep()}px`)
 }
 $('applyText').onclick = () => {
-  if (editableText(selected))
-    commit(() => {
-      textSelection(selected).apply($('text').value)
-    })
+  if (!editableText(selected)) return
+  const all = attributeTargets()
+  const targets = all.filter(editableText)
+  // Capture text nodes first: matching ancestors and descendants may share one.
+  const texts = new Map(targets.map((element) => [element, textSelection(element)]))
+  const value = $('text').value
+  commitAttributes((element) => texts.get(element).apply(value), targets, all.length - targets.length)
 }
-let imageRequest = 0
+document.querySelectorAll('input[name="attributeScope"]').forEach((input) => {
+  input.onchange = () => {
+    imageRequest++
+    updateAttributeScope()
+  }
+})
 async function applyImage(read) {
-  if (!selected || !imageTarget(selected) || !ready || busy) return
+  if (!selected || !imageTarget(selected) || !ready || busy || gesture || imagePending) return
   const target = selected,
-    key = selectedKey,
+    targets = attributeTargets(),
     request = ++imageRequest
+  imagePending = true
   $('applyImage').disabled = $('imageFile').disabled = true
+  updateAttributeScope()
   status('正在读取并检查图片…')
   try {
     const src = await read()
@@ -633,24 +932,40 @@ async function applyImage(read) {
       preview.referrerPolicy = 'no-referrer'
       preview.src = src
     })
-    if (request !== imageRequest || selected !== target || !ready || busy || !target.isConnected)
+    if (request !== imageRequest || selected !== target || !ready || busy || gesture ||
+        targets.some((element) => !source.body.contains(element)))
       throw new Error('选择或页面已改变，请重新选择图片后替换')
+    // Replacing an outer SVG also replaces any matched nested SVGs it contains.
+    const imageTargets = targets.filter((element) => !targets.some((other) => other !== element && other.contains(element)))
+    const replacements = imageTargets.map((element) => ({
+      element, size: liveNodes.get(element)?.getBoundingClientRect(),
+    }))
     const clone = source.documentElement.cloneNode(true)
+    const originals = Array.from(source.documentElement.querySelectorAll('*'))
+    const copies = Array.from(clone.querySelectorAll('*'))
+    const copyByNode = new Map(originals.map((element, index) => [element, copies[index]]))
+    for (const { element, size } of replacements) replaceImage(copyByNode.get(element), src, size)
     // Keep the final request below the workspace API body limit, including JSON escaping.
     if (
-      new TextEncoder().encode(JSON.stringify({ html: clone.outerHTML, src })).length >
+      new TextEncoder().encode(JSON.stringify({ html: clone.outerHTML, revision })).length >
       4 * 1024 * 1024
     )
       throw new Error('页面与图片总体积过大，请使用更小的图片或网络地址')
-    const live = frame.contentDocument.querySelector('[' + marker + '="' + key + '"]')
-    const size = live?.getBoundingClientRect()
-    commit(() => {
-      replaceImage(target, src, size)
-    }, null)
+    let replacement
+    if (commit(() => {
+      for (const { element, size } of replacements) {
+        const containsSelection = element === target || element.contains(target)
+        const image = replaceImage(element, src, size)
+        if (containsSelection) replacement = image
+      }
+    }, () => replacement) && $('scopeSimilar').checked)
+      status(`已替换 ${targets.length} 个类似图片元素，尚未写入工作区`)
   } catch (error) {
     status(error.message, true)
   } finally {
+    imagePending = false
     $('applyImage').disabled = $('imageFile').disabled = false
+    updateAttributeScope()
   }
 }
 $('applyImage').onclick = () => applyImage(() => imageUrl($('imageUrl').value))
@@ -679,10 +994,17 @@ document.querySelectorAll('[data-style]').forEach((input) => {
       status('无效的 CSS 值，请带上 px、% 等单位', true)
       return
     }
-    commit(() => {
-      if (value) selected.style.setProperty(property, value, 'important')
-      else selected.style.removeProperty(property)
-    })
+    const targets = attributeTargets()
+    const dimension = property === 'width' || property === 'height'
+    const inline = new Set(dimension && value ? targets.filter((element) => {
+      const live = liveNodes.get(element)
+      return live && frame.contentWindow.getComputedStyle(live).display === 'inline'
+    }) : [])
+    commitAttributes((element) => {
+      if (dimension) applyElementDimension(element, property, value, inline.has(element))
+      else if (value) element.style.setProperty(property, value, 'important')
+      else element.style.removeProperty(property)
+    }, targets)
   }
 })
 $('parent').onclick = () => {
@@ -693,6 +1015,48 @@ $('parent').onclick = () => {
       break
     }
 }
+document.querySelectorAll('[data-sibling]').forEach((button) => {
+  button.onclick = () => {
+    if (!ready || busy || gesture) return
+    const key = siblingKey(button.dataset.sibling)
+    if (key) {
+      liveNodes.get(nodes.get(key))?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' })
+      select(key)
+    }
+  }
+})
+$('swapSteps').onchange = () => {
+  $('swapSteps').value = String(swapCount())
+  updateSiblingButtons()
+}
+$('swapSteps').onkeydown = (event) => {
+  if (event.key === 'Enter') event.target.blur()
+}
+document.querySelectorAll('[data-swap]').forEach((button) => {
+  button.onclick = () => {
+    if (!ready || busy || gesture || !selected) return
+    const direction = button.dataset.swap, count = swapCount()
+    const target = nodes.get(siblingKey(direction, count))
+    if (!target || target.parentElement !== selected.parentElement) {
+      updateSiblingButtons()
+      status('该方向没有第 ' + count + ' 个可调换的兄弟元素', true)
+      return
+    }
+    try {
+      const node = selected
+      const first = elementPositionState(liveNodes.get(node))
+      const second = elementPositionState(liveNodes.get(target))
+      const [firstValue, secondValue] = siblingSwapTranslations(first, second)
+      commit(() => {
+        applyFreeDrag(node, firstValue, first.inline)
+        applyFreeDrag(target, secondValue, second.inline)
+      }, () => node)
+      liveNodes.get(node)?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' })
+      select(keyFor(node))
+      status('已与' + { left: '左侧', right: '右侧', up: '上侧', down: '下侧' }[direction] + '第 ' + count + ' 个兄弟调换位置，尚未写入工作区')
+    } catch (error) { status(error.message, true) }
+  }
+})
 $('child').onclick = () => {
   const options = $('children').options
   if (options.length === 2) {
@@ -737,14 +1101,18 @@ function restore(delta) {
 }
 $('undo').onclick = () => restore(-1)
 $('redo').onclick = () => restore(1)
-async function request(method = 'GET', data) {
-  const response = await fetch(base + '__layrr__/manual-data', {
+async function request(method = 'GET', data, submissionId) {
+  const response = await fetch(base + '__layrr__/manual-data' + (submissionId ? '?submission=' + encodeURIComponent(submissionId) : ''), {
     method,
     headers: { 'x-quickpage-manual': '1', 'Content-Type': 'application/json' },
     body: data ? JSON.stringify(data) : undefined,
   })
   const result = await response.json()
-  if (!response.ok) throw new Error(result.error || '工作区请求失败')
+  if (!response.ok) {
+    const error = new Error(result.error || '工作区请求失败')
+    error.status = response.status
+    throw error
+  }
   return result
 }
 async function load() {
@@ -754,6 +1122,7 @@ async function load() {
   try {
     const data = await request()
     revision = data.revision
+    retrySubmission = null
     source = new DOMParser().parseFromString(data.html, 'text/html')
     nodes = new Map()
     nodeKeys = new WeakMap()
@@ -763,33 +1132,102 @@ async function load() {
     position = 0
     render(null)
     status('点选元素开始编辑；所有操作均不调用 AI')
+    if (data.pendingSubmissionId) {
+      pendingSubmission = data.pendingSubmissionId
+      saved = ''
+      void waitForVersion(data.pendingSubmissionId, serialize())
+    }
   } catch (error) {
     status(error.message, true)
   } finally {
-    busy = false
+    busy = !!pendingSubmission
     if (source) update()
   }
 }
 $('reload').onclick = load
-$('save').onclick = async () => {
-  if (busy || !ready || serialize() === saved) return
+async function waitForVersion(id, submittedHtml, payload) {
+  pendingSubmission = id
+  busy = true
+  update()
+  const started = Date.now()
+  let needsSubmit = !!payload
+  while (pendingSubmission === id) {
+    try {
+      if (needsSubmit) {
+        const result = await request('POST', payload)
+        revision = result.revision
+        needsSubmit = false
+        if (result.submissionId !== id) throw Object.assign(new Error('工作区尚未支持版本提交，请保留修改并重新打开工作区'), { status: 409 })
+      }
+      const data = await request('GET', undefined, id)
+      if (data.submissionStatus?.id === id) {
+        const result = data.submissionStatus
+        // Keep the submitted revision so another window's newer edits still conflict.
+        revision = result.revision
+        pendingSubmission = null
+        retrySubmission = null
+        busy = false
+        if (result.success) {
+          saved = submittedHtml
+          $('versionFeedback').value = ''
+        }
+        status(result.message, !result.success)
+        update()
+        return
+      }
+      if (data.pendingSubmissionId !== id)
+        throw Object.assign(new Error('版本提交已失效，请保留修改并重新提交'), { status: 409 })
+      status(Date.now() - started > 10000
+        ? '已写入AI工作区，正在等待保存版本。请保持 QuickPage 原工作区打开。'
+        : '已写入AI工作区，正在自动保存到页面历史…')
+    } catch (error) {
+      if (error.status >= 400 && error.status < 500) {
+        pendingSubmission = null
+        busy = false
+        status(error.message, true)
+        update()
+        return
+      }
+      status('正在重试获取保存结果：' + error.message, true)
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+  }
+}
+$('save').onclick = () => {
+  if (busy || !ready || gesture || serialize() === saved) return
+  $('versionFeedbackError').hidden = true
+  $('versionDialog').showModal()
+  $('versionFeedback').focus()
+}
+$('cancelVersion').onclick = () => $('versionDialog').close()
+$('versionForm').onsubmit = async (event) => {
+  event.preventDefault()
+  if (busy || !ready || gesture || serialize() === saved) return
+  const feedbackText = $('versionFeedback').value.trim()
+  if (!feedbackText || feedbackText.length > 500) {
+    $('versionFeedbackError').textContent = '请输入 1–500 字的版本修改备注'
+    $('versionFeedbackError').hidden = false
+    $('versionFeedback').focus()
+    return
+  }
   const html = serialize()
+  if (!retrySubmission || retrySubmission.html !== html || retrySubmission.feedbackText !== feedbackText)
+    retrySubmission = { html, revision, submit: true, feedbackText, submissionId: crypto.randomUUID() }
+  $('versionDialog').close()
   busy = true
   update()
   try {
-    const result = await request('POST', { html, revision })
-    revision = result.revision
-    saved = html
-    status('已写入工作区。请返回 QuickPage 点击“确认保存到当前迭代”。')
+    await waitForVersion(retrySubmission.submissionId, html, retrySubmission)
   } catch (error) {
     status(error.message, true)
   } finally {
-    busy = false
+    busy = !!pendingSubmission
     update()
   }
 }
 window.addEventListener('beforeunload', (event) => {
-  if (source && serialize() !== saved) {
+  finishNudge()
+  if (source && (pendingSubmission || serialize() !== saved)) {
     event.preventDefault()
     event.returnValue = ''
   }

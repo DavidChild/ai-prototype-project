@@ -35,16 +35,45 @@ function childrenCount(page: Page): number {
 }
 
 function confirmRemove(page: Page) {
+  if (wb.hierarchySaving || wb.loading) return
   if (childrenCount(page) > 0) {
     message.warning('该菜单下还有下级页面，请先删除或移动它们')
     return
   }
-  dialog.warning({
-    title: '删除',
-    content: `删除「${page.spec.name}」${page.spec.groupOnly ? '' : '及其全部版本历史'}？`,
-    positiveText: '删除',
+  let removing = false
+  const confirmation = dialog.warning({
+    title: page.spec.groupOnly ? '删除菜单确认' : '删除页面确认',
+    content: `确定删除「${page.spec.name}」吗？${page.spec.groupOnly ? '该导航分组将被删除。' : '页面内容和全部版本历史将一并删除。'}此操作不可恢复。`,
+    positiveText: '确认删除',
     negativeText: '取消',
-    onPositiveClick: () => wb.removePage(page.id),
+    positiveButtonProps: { type: 'error' },
+    maskClosable: false,
+    onPositiveClick: async () => {
+      if (removing) return false
+      if (wb.project?.id !== page.projectId || !wb.pages.some((item) => item.id === page.id)) {
+        message.error('项目或页面已切换，请重新选择要删除的页面')
+        return false
+      }
+      removing = true
+      confirmation.loading = true
+      confirmation.closable = false
+      confirmation.closeOnEsc = false
+      confirmation.negativeButtonProps = { disabled: true }
+      try {
+        await wb.removePage(page.id)
+        message.success('已删除「' + page.spec.name + '」')
+        return true
+      } catch (error) {
+        message.error(error instanceof Error ? error.message : '删除失败，请重试')
+        return false
+      } finally {
+        removing = false
+        confirmation.loading = false
+        confirmation.closable = true
+        confirmation.closeOnEsc = true
+        confirmation.negativeButtonProps = { disabled: false }
+      }
+    },
   })
 }
 

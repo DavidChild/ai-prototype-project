@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFile } from 'node:fs/promises'
+import { runInNewContext } from 'node:vm'
 import { htmlRevision, manualEditorShell, validateManualSave } from '../server/layrrManual.ts'
 import { textSelection } from '../server/layrrManualText.js'
 import {
@@ -9,8 +10,145 @@ import {
   dragTranslation,
   keyboardCommand,
   moveModule,
+  normalizeGridStep,
+  automaticGridStep,
+  directionalSibling,
+  nthDirectionalSibling,
+  siblingSwapTranslations,
   resizeBox,
 } from '../server/layrrManualLayout.js'
+
+test('manual inspector separates position controls and element attributes into accessible tabs', () => {
+  const shell = manualEditorShell('/api/layrr/test')
+  assert.match(shell, /role="tablist" aria-label="元素编辑分类"/)
+  assert.match(shell, /id="positionTab"[^>]*role="tab"[^>]*aria-selected="true"[^>]*aria-controls="positionPanel"[^>]*tabindex="0">位置与选择/)
+  assert.match(shell, /id="attributesTab"[^>]*role="tab"[^>]*aria-selected="false"[^>]*aria-controls="attributesPanel"[^>]*tabindex="-1">元素属性/)
+  const position = shell.match(/<section id="positionPanel"[^>]*>([\s\S]*?)<\/section>/)?.[1]
+  const attributes = shell.slice(shell.indexOf('<section id="attributesPanel"'), shell.indexOf('</aside>'))
+  assert.ok(position)
+  for (const id of ['parent', 'child', 'siblingLeft', 'swapSteps', 'swapRight', 'children', 'duplicate', 'delete'])
+    assert.ok(position.includes(`id="${id}"`))
+  for (const id of ['text', 'applyText', 'imageEditor', 'imageFile', 'imageUrl', 'color', 'width', 'height', 'padding', 'margin']) {
+    assert.ok(attributes.includes(`id="${id}"`))
+    assert.ok(!position.includes(`id="${id}"`))
+  }
+  assert.match(attributes, /^<section[^>]*role="tabpanel"[^>]*aria-labelledby="attributesTab" hidden>/)
+  assert.match(shell, /\.editor-panel\[hidden\]\{display:none\}/)
+})
+
+test('sibling selection follows visual directions instead of DOM order', () => {
+  const rect = (left, top, width = 40, height = 40) => ({ left, top, right: left + width, bottom: top + height })
+  const selected = rect(100, 100)
+  const candidates = [
+    { key: 'down', rect: rect(100, 160) },
+    { key: 'right', rect: rect(160, 100) },
+    { key: 'invisible', rect: rect(90, 100, 0, 0) },
+    { key: 'up', rect: rect(100, 40) },
+    { key: 'farLeft', rect: rect(-20, 100) },
+    { key: 'left', rect: rect(40, 100) },
+  ]
+  for (const direction of ['left', 'right', 'up', 'down'])
+    assert.equal(directionalSibling(selected, candidates, direction), direction)
+  assert.equal(directionalSibling(selected, [], 'left'), null)
+  assert.equal(directionalSibling(selected, candidates, 'invalid'), null)
+  assert.equal(directionalSibling(selected, [{ key: 'farLeft', rect: rect(-20, 100) }, { key: 'diagonal', rect: rect(70, 150) }], 'left'), 'farLeft')
+  assert.equal(directionalSibling(selected, [{ key: 'diagonal', rect: rect(70, 150) }], 'left'), 'diagonal')
+  assert.equal(directionalSibling(selected, [{ key: 'overlap', rect: selected }], 'left'), null)
+})
+
+test('cross-sibling targets count in the chosen visual direction without mutating the middle nodes', () => {
+  const rect = (x, y) => ({ left: x, top: y, right: x + 20, bottom: y + 20 })
+  const selected = rect(100, 100)
+  const candidates = []
+  for (const [direction, dx, dy] of [['left', -40, 0], ['right', 40, 0], ['up', 0, -40], ['down', 0, 40]])
+    for (let index = 3; index >= 1; index--)
+      candidates.push({ key: direction + index, rect: rect(100 + dx * index, 100 + dy * index) })
+  const original = structuredClone(candidates)
+  for (const direction of ['left', 'right', 'up', 'down']) {
+    for (let count = 1; count <= 3; count++)
+      assert.equal(nthDirectionalSibling(selected, candidates, direction, count), direction + count)
+    assert.equal(nthDirectionalSibling(selected, candidates, direction, 4), null)
+  }
+  for (const count of [0, -1, 1.5, Infinity, 999])
+    assert.equal(nthDirectionalSibling(selected, candidates, 'right', count), null)
+  assert.deepEqual(candidates, original)
+})
+
+test('position swaps preserve existing translations and use the parent coordinate system', () => {
+  const first = { rect: { left: 10, top: 20 }, translate: '10px 20px', inverse: { a: 1, b: 0, c: 0, d: 1 } }
+  const second = { rect: { left: 110, top: 170 }, translate: 'none', inverse: first.inverse }
+  assert.deepEqual(siblingSwapTranslations(first, second), ['calc(10px + 100px) calc(20px + 150px)', '-100px -150px'])
+  const scaled = { a: 0.5, b: 0, c: 0, d: 0.5 }
+  assert.deepEqual(siblingSwapTranslations({ ...first, inverse: scaled }, { ...second, inverse: scaled }),
+    ['calc(10px + 50px) calc(20px + 75px)', '-50px -75px'])
+  const rotated = { a: 0, b: -1, c: 1, d: 0 }
+  assert.deepEqual(siblingSwapTranslations({ ...first, inverse: rotated }, { ...second, inverse: rotated }),
+    ['calc(10px + 150px) calc(20px - 100px)', '-150px 100px'])
+  assert.throws(() => siblingSwapTranslations(first, { ...second, inverse: { a: NaN, b: 0, c: 0, d: 1 } }), /无效拖动/)
+})
+
+test('grid steps are editable, normalized and automatically inferred from parent gaps', () => {
+  for (const [value, expected] of [[30, 30], ['45', 45], ['12.7', 13], [0, 1], [-10, 1], [900, 500], ['', 30], ['bad', 30], [Infinity, 30]])
+    assert.equal(normalizeGridStep(value), expected)
+  assert.equal(automaticGridStep({ rowGap: '24px', columnGap: '16px' }), 16)
+  assert.equal(automaticGridStep({ rowGap: 'normal', columnGap: '20px' }), 20)
+  assert.equal(automaticGridStep({ rowGap: '0px', columnGap: '0px' }), 30)
+  assert.equal(automaticGridStep({ rowGap: '10%', columnGap: 'normal' }), 30)
+  assert.equal(automaticGridStep(), 30)
+})
+
+test('grid drag combines live-configurable snapping with parent restriction for both drag targets', async () => {
+  const client = await readFile(new URL('../server/layrrManualClient.js', import.meta.url), 'utf8')
+  const inputs = { dragMode: { value: 'grid' }, gridSize: { value: '30' }, gridAuto: { checked: true } }
+  const parent = {}
+  const live = { parentElement: parent }
+  const context = {
+    $: (id) => inputs[id], normalizeGridStep, automaticGridStep, status: () => {},
+    gesture: null, selectedKey: 'test', marker: 'test-node',
+    frame: {
+      contentDocument: { querySelector: () => live },
+      contentWindow: { getComputedStyle: () => ({ rowGap: '20px' }) },
+    },
+    window: { interact: {
+      modifiers: {
+        snap: (options) => ({ type: 'snap', options }),
+        restrictRect: (options) => ({ type: 'restrict', options }),
+      },
+      snappers: { grid: (step) => (x, y) => ({ x: Math.round(x / step.x) * step.x, y: Math.round(y / step.y) * step.y }) },
+    } },
+  }
+  const helpers = runInNewContext(
+    client.slice(client.indexOf('function positionDragMode()'), client.indexOf('function registerNodes()')) +
+      '\n;({ dragOptions, syncGridStep })', context,
+  )
+  for (const handle of [false, true]) {
+    const options = helpers.dragOptions(handle)
+    assert.equal(options.modifiers.length, 2)
+    const [snap, restrict] = options.modifiers
+    assert.equal(snap.type, 'snap')
+    assert.equal(snap.options.range, Infinity)
+    assert.equal(snap.options.relativePoints[0].x, 0)
+    assert.equal(snap.options.relativePoints[0].y, 0)
+    inputs.gridSize.value = '30'
+    assert.equal(snap.options.targets[0](44, 31).x, 30)
+    inputs.gridSize.value = '20'
+    assert.equal(snap.options.targets[0](44, 31).x, 40)
+    assert.equal(restrict.options.endOnly, true)
+    assert.equal(handle ? restrict.options.restriction() : restrict.options.restriction, handle ? parent : 'parent')
+    assert.equal(options.inertia.allowResume, false)
+  }
+  inputs.gridSize.value = '45'
+  inputs.gridAuto.checked = false
+  helpers.syncGridStep(live)
+  assert.equal(inputs.gridSize.value, '45')
+  inputs.gridAuto.checked = true
+  helpers.syncGridStep(live)
+  assert.equal(inputs.gridSize.value, '20')
+  inputs.dragMode.value = 'parent'
+  assert.equal(helpers.dragOptions().modifiers.length, 1)
+  inputs.dragMode.value = 'free'
+  assert.equal(helpers.dragOptions().modifiers.length, 0)
+})
 
 test('local editing opens and reopens the original manual workspace', async () => {
   const source = await readFile(new URL('../src/components/workbench/LayrrEditor.vue', import.meta.url), 'utf8')
@@ -210,8 +348,23 @@ test('manual saves are exact, revision-locked and blocked during AI jobs', () =>
 
 test('manual shell contains no AI overlay and exposes explicit workspace-save controls', () => {
   const html = manualEditorShell('/preview/test')
-  assert.match(html, /不调用 AI/)
-  assert.match(html, /写入工作区/)
+  assert.match(html, /<header><strong>手动编辑<\/strong>/)
+  assert.doesNotMatch(html, /手动编辑.*不调用 AI/)
+  assert.match(html, /写入AI工作区/)
+  assert.match(html, /<dialog id="versionDialog"/)
+  assert.match(html, /id="versionFeedback"[^>]*maxlength="500"[^>]*required/)
+  assert.match(html, /版本号自动生成/)
+  assert.match(html, /版本修改备注/)
   assert.match(html, /preview\/test\/__layrr__\/manual.js/)
   assert.doesNotMatch(html, /overlay.js/)
+  assert.match(html, /<option value="grid">容器网格拖拽<\/option>/)
+  assert.doesNotMatch(html, /<option value="reorder">|模块重排/)
+  assert.match(html, /id="gridSettings" hidden/)
+  assert.match(html, /id="gridSize"[^>]*value="30"/)
+  assert.match(html, /id="gridAuto"[^>]*checked/)
+  for (const direction of ['left', 'right', 'up', 'down'])
+    assert.match(html, new RegExp(`data-sibling="${direction}" disabled`))
+  for (const direction of ['left', 'right', 'up', 'down'])
+    assert.match(html, new RegExp(`data-swap="${direction}" disabled`))
+  assert.match(html, /id="swapSteps"[^>]*min="1"[^>]*value="1"/)
 })

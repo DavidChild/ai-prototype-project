@@ -59,7 +59,7 @@ test('Layrr workspaces serve official overlay, accept local jobs and isolate fil
     })
   ).data
   assert.ok(session.id)
-  assert.match(session.editorUrl, /tmagic-editor\.html\?workspace=/)
+  assert.equal(session.editorUrl, session.url + 'manual')
   const documentUrl = origin + '/api/layrr/' + session.id + '/document'
   const documentState = await fetch(documentUrl, { headers }).then((response) => response.json())
   assert.equal(documentState.html, '<html><body><h1>old</h1></body></html>')
@@ -87,7 +87,7 @@ test('Layrr workspaces serve official overlay, accept local jobs and isolate fil
     Origin: previewOrigin,
     'Content-Type': 'application/json',
   }
-  assert.match(await (await fetch(session.url + 'manual')).text(), /不调用 AI/)
+  assert.match(await (await fetch(session.url + 'manual')).text(), /<strong>手动编辑<\/strong>/)
   const manualScript = await (await fetch(session.url + '__layrr__/manual.js')).text()
   new Function(manualScript.replace(/^import .*$/gm, ''))
   assert.match(await (await fetch(session.url + 'grid')).text(), /GridStack/)
@@ -118,6 +118,51 @@ test('Layrr workspaces serve official overlay, accept local jobs and isolate fil
   assert.equal((await request('/' + session.id)).data.html, manualHtml)
   assert.equal((await request('/' + session.id)).data.job, null)
   assert.equal((await manualSave({ revision: manualState.revision, html: 'stale' })).status, 409)
+  const submitState = await fetch(manualUrl, { headers: manualHeaders }).then((response) => response.json())
+  for (const feedbackText of [undefined, '', '   ', 'x'.repeat(501)]) {
+    const invalid = await manualSave({ revision: submitState.revision, html: 'invalid note', submit: true, feedbackText })
+    assert.equal(invalid.status, 409)
+    assert.match((await invalid.json()).error, /版本修改备注/)
+  }
+  assert.equal(await readFile(session.file, 'utf8'), manualHtml)
+  const submission = {
+    revision: submitState.revision,
+    html: '<html><body><h1>提交修改</h1></body></html>',
+    submit: true,
+    feedbackText: '  调整标题尺寸和间距  ',
+    submissionId: 'manual-submission-000001',
+  }
+  const queued = await manualSave(submission).then((response) => response.json())
+  assert.equal(queued.submissionId, submission.submissionId)
+  const pending = (await request('/' + session.id)).data.submission
+  assert.equal(pending.feedbackText, '调整标题尺寸和间距')
+  assert.equal(pending.html, submission.html)
+  assert.equal((await manualSave(submission)).status, 200, 'a lost POST response can be retried safely')
+  assert.equal((await manualSave({ ...submission, html: 'changed retry' })).status, 409)
+  assert.equal((await manualSave({ revision: queued.revision, html: 'another write' })).status, 409)
+  const acknowledgment = { submissionId: pending.id, success: true, message: '已保存为 v2' }
+  assert.equal((await request('/' + session.id, 'POST', acknowledgment)).status, 200)
+  assert.equal((await request('/' + session.id, 'POST', acknowledgment)).status, 200)
+  assert.equal((await request('/' + session.id)).data.submission, null)
+  const receipt = await fetch(manualUrl + '?submission=' + pending.id, { headers: manualHeaders }).then((response) => response.json())
+  assert.equal(receipt.submissionStatus.success, true)
+  assert.equal(receipt.submissionStatus.message, '已保存为 v2')
+  assert.equal((await manualSave(submission)).status, 200, 'a completed submission is not queued again')
+  assert.equal((await request('/' + session.id)).data.submission, null)
+  assert.equal((await manualSave({ ...submission, feedbackText: 'different note' })).status, 409)
+  const next = {
+    revision: queued.revision, html: '<p>继续编辑</p>', submit: true,
+    feedbackText: '继续调整', submissionId: 'manual-submission-000002',
+  }
+  assert.equal((await request('/' + session.id + '/document', 'POST', next)).status, 200)
+  const secondPending = (await request('/' + session.id)).data.submission
+  assert.equal(secondPending.feedbackText, '继续调整')
+  await request('/' + session.id, 'POST', { submissionId: secondPending.id, success: false, message: '页面已产生新版本' })
+  const failedReceipt = await fetch(manualUrl + '?submission=' + secondPending.id, { headers: manualHeaders }).then((response) => response.json())
+  assert.equal(failedReceipt.submissionStatus.success, false)
+  assert.equal(failedReceipt.submissionStatus.message, '页面已产生新版本')
+  assert.equal((await manualSave(submission)).status, 200)
+  assert.equal(await readFile(session.file, 'utf8'), next.html, 'replaying an older submission must not overwrite later edits')
   const ws = new WebSocket(previewOrigin.replace('http:', 'ws:') + prefix + '/__layrr__/ws', {
     origin: previewOrigin,
   })
@@ -143,6 +188,10 @@ test('Layrr workspaces serve official overlay, accept local jobs and isolate fil
   )
   assert.equal(JSON.parse((await resultPromise)[0]).success, true)
   assert.match((await request('/' + session.id)).data.html, /new/)
+  const aiSubmission = (await request('/' + session.id)).data.submission
+  assert.equal(aiSubmission.id, job.id)
+  assert.equal(aiSubmission.feedbackText, 'change text')
+  await request('/' + session.id, 'POST', { submissionId: aiSubmission.id, success: true, message: '已保存为 v3' })
   assert.equal(
     (await request('/' + session.id, 'POST', { jobId: job.id, success: true, html: 'stale' }))
       .status,

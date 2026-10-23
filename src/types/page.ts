@@ -13,7 +13,7 @@ export interface Page {
   updatedAt: number
 }
 
-export type PageVersionSource = 'generate' | 'refine' | 'rollback' | 'layrr' | 'import'
+export type PageVersionSource = 'generate' | 'refine' | 'rollback' | 'layrr' | 'import' | 'copy'
 
 export interface PageVersion {
   id: string

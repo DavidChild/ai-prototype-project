@@ -420,6 +420,32 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     }
   }
 
+  async function copyPage(projectId: string, pageId: string, name: string): Promise<void> {
+    if (loading.value || project.value?.id !== projectId || !pageOf(pageId))
+      throw new Error('项目或页面已切换，请重新打开复制')
+    if (hierarchySaving.value) throw new Error('正在保存页面层级，请稍候')
+    if (refining.value) throw new Error('正在修改页面，请完成或停止后再复制')
+    const sequence = loadSequence
+    hierarchySaving.value = true
+    try {
+      const result = await pageRepo.copy(projectId, pageId, name)
+      if (sequence !== loadSequence || project.value?.id !== projectId) return
+      const current = new Map(pages.value.map((page) => [page.id, page]))
+      pages.value = result.pages.map((page) => ({
+        ...(current.get(page.id) ?? page),
+        sortOrder: page.sortOrder,
+      }))
+      if (project.value.analysis)
+        project.value.analysis.pages = pages.value.map((page) => plainClone(page.spec))
+      project.value.updatedAt = result.updatedAt
+      if (result.version) htmlByPage.set(result.page.id, result.version.html)
+      selectedPageId.value = result.page.id
+      await loadVersions()
+    } finally {
+      hierarchySaving.value = false
+    }
+  }
+
   async function importPageHtml(projectId: string, pageId: string, html: string): Promise<void> {
     if (loading.value || project.value?.id !== projectId || !pageOf(pageId))
       throw new Error('项目或页面已切换，请重新打开导入')
@@ -543,6 +569,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     rollbackTo,
     updateSelectedSpec,
     renamePage,
+    copyPage,
     importPageHtml,
     addPage,
     removePage,

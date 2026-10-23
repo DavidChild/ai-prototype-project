@@ -179,6 +179,37 @@ const renameShow = ref(false)
 const renameId = ref('')
 const renameName = ref('')
 const renameSaving = ref(false)
+const copyShow = ref(false)
+const copyTarget = ref<{ projectId: string; pageId: string } | null>(null)
+const copyName = ref('')
+const copySaving = ref(false)
+watch(() => wb.project?.id, () => {
+  copyShow.value = false
+  copyTarget.value = null
+})
+function openCopy(page: Page) {
+  if (copySaving.value || wb.hierarchySaving || wb.loading) return
+  copyTarget.value = { projectId: page.projectId, pageId: page.id }
+  copyName.value = page.spec.name + 'copy'
+  copyShow.value = true
+}
+async function confirmCopy() {
+  const target = copyTarget.value
+  if (!target || copySaving.value || !copyName.value.trim()) return
+  copySaving.value = true
+  try {
+    await wb.copyPage(target.projectId, target.pageId, copyName.value)
+    if (copyTarget.value === target && wb.project?.id === target.projectId) {
+      searchQuery.value = ''
+      copyShow.value = false
+      message.success('页面已复制')
+    }
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '复制失败，请重试')
+  } finally {
+    copySaving.value = false
+  }
+}
 function openRename(page: Page) {
   renameId.value = page.id
   renameName.value = page.spec.name
@@ -349,6 +380,19 @@ async function reorder(page: Page, direction: number) {
   const target = siblings[index + direction]?.page
   if (target) await move(page.id, target.id, direction < 0 ? 'before' : 'after')
 }
+function handlePageAction(page: Page, key: string) {
+  switch (key) {
+    case 'rename': return openRename(page)
+    case 'copy': return openCopy(page)
+    case 'remove': return emit('remove', page)
+    case 'image-html': return openImport(page, true)
+    case 'import': return openImport(page)
+    case 'parent': return openMove(page)
+    case 'add': return emit('add', page.spec.id)
+    case 'up': return reorder(page, -1)
+    case 'down': return reorder(page, 1)
+  }
+}
 </script>
 
 <template>
@@ -437,6 +481,13 @@ async function reorder(page: Page, direction: number) {
           trigger="click"
           :options="[
             { label: '重命名', key: 'rename' },
+            {
+              label: '复制页面',
+              key: 'copy',
+              disabled: !!page.spec.groupOnly || wb.loading || wb.refining ||
+                ['queued', 'generating'].includes(page.genStatus),
+            },
+            { label: '删除页面', key: 'remove' },
             { label: '移到上级菜单 / 调整层级', key: 'parent' },
             { label: '上移（含下级）', key: 'up' },
             { label: '下移（含下级）', key: 'down' },
@@ -458,20 +509,7 @@ async function reorder(page: Page, direction: number) {
                 ['queued', 'generating'].includes(page.genStatus),
             },
           ]"
-          @select="
-            (key: string) =>
-              key === 'rename'
-                ? openRename(page)
-                : key === 'image-html'
-                  ? openImport(page, true)
-                  : key === 'import'
-                    ? openImport(page)
-                    : key === 'parent'
-                      ? openMove(page)
-                      : key === 'add'
-                        ? emit('add', page.spec.id)
-                        : reorder(page, key === 'up' ? -1 : 1)
-          "
+          @select="(key: string) => handlePageAction(page, key)"
         >
           <n-button size="tiny" quaternary title="更多操作" :disabled="wb.hierarchySaving"
             >⋮</n-button
@@ -632,6 +670,39 @@ async function reorder(page: Page, direction: number) {
           :disabled="!renameName.trim() || wb.hierarchySaving"
           @click="confirmRename"
           >保存</n-button
+        >
+      </n-space>
+    </template>
+  </n-modal>
+  <n-modal
+    v-model:show="copyShow"
+    preset="card"
+    title="复制页面"
+    style="width: 400px; max-width: 95vw"
+    :mask-closable="!copySaving"
+    :close-on-esc="!copySaving"
+    :closable="!copySaving"
+  >
+    <n-input
+      v-model:value="copyName"
+      autofocus
+      placeholder="请输入新页面名称"
+      aria-label="复制后的页面名称"
+      :disabled="copySaving"
+      @keydown.enter="!$event.isComposing && confirmCopy()"
+    />
+    <n-text depth="3" style="display: block; margin-top: 12px; font-size: 12px"
+      >复制当前页面配置和已保存内容，副本与原页面同级；不包含下级页面及历史版本。</n-text
+    >
+    <template #footer>
+      <n-space justify="end">
+        <n-button :disabled="copySaving" @click="copyShow = false">取消</n-button>
+        <n-button
+          type="primary"
+          :loading="copySaving"
+          :disabled="copySaving || !copyName.trim() || wb.hierarchySaving"
+          @click="confirmCopy"
+          >创建页面</n-button
         >
       </n-space>
     </template>
