@@ -6,6 +6,9 @@ import vue from '@vitejs/plugin-vue'
 import vueDevTools from 'vite-plugin-vue-devtools'
 import Components from 'unplugin-vue-components/vite'
 import { NaiveUiResolver } from 'unplugin-vue-components/resolvers'
+import { layrrBridgePlugin } from './server/layrrBridge'
+
+const tmagicEditorEntry = fileURLToPath(new URL('./tmagic-editor.html', import.meta.url))
 
 const STRIP_REQUEST_HEADERS = new Set([
   'host',
@@ -127,11 +130,15 @@ export default defineConfig({
       dts: 'src/components.d.ts',
     }),
     llmProxyPlugin(),
+    layrrBridgePlugin(),
   ],
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
+  },
+  build: {
+    rollupOptions: { input: { index: fileURLToPath(new URL('./index.html', import.meta.url)), tmagic: tmagicEditorEntry } },
   },
   server: {
     host: '0.0.0.0',

@@ -420,6 +420,23 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     }
   }
 
+  async function importPageHtml(projectId: string, pageId: string, html: string): Promise<void> {
+    if (loading.value || project.value?.id !== projectId || !pageOf(pageId))
+      throw new Error('项目或页面已切换，请重新打开导入')
+    const sequence = loadSequence
+    const version = await versionRepo.initializeHtml(projectId, pageId, html)
+    if (sequence !== loadSequence || project.value?.id !== projectId) return
+    const page = pageOf(pageId)
+    if (!page) return
+    page.currentVersionId = version.id
+    page.genStatus = 'done'
+    page.errorMessage = undefined
+    page.updatedAt = version.createdAt
+    htmlByPage.set(pageId, html)
+    selectedPageId.value = pageId
+    await loadVersions()
+  }
+
   async function updateSelectedSpec(spec: PageSpec): Promise<void> {
     const page = selectedPage.value
     if (!page) return
@@ -526,6 +543,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     rollbackTo,
     updateSelectedSpec,
     renamePage,
+    importPageHtml,
     addPage,
     removePage,
     renameProject,

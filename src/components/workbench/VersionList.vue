@@ -9,6 +9,8 @@ const SOURCE_LABEL: Record<PageVersion['source'], string> = {
   generate: '生成',
   refine: '微调',
   rollback: '回退',
+  layrr: 'Layrr 局部编辑',
+  import: '导入 HTML',
 }
 </script>
 

@@ -3,6 +3,7 @@ import { ref, watch } from 'vue'
 import { useWorkbenchStore } from '@/stores/workbench'
 import SandboxFrame from './SandboxFrame.vue'
 import StreamingCodePane from './StreamingCodePane.vue'
+import LayrrEditor from './LayrrEditor.vue'
 
 const wb = useWorkbenchStore()
 
@@ -56,22 +57,19 @@ watch(
         @update:value="(v: number | 'fit') => (zoom = v)"
       />
       <div style="flex: 1" />
+      <LayrrEditor />
       <template v-if="wb.selectedPage && !wb.selectedPage.spec.groupOnly">
         <n-button
-          v-if="wb.selectedPage.genStatus === 'generating' || wb.selectedPage.genStatus === 'queued'"
+          v-if="
+            wb.selectedPage.genStatus === 'generating' || wb.selectedPage.genStatus === 'queued'
+          "
           size="tiny"
           secondary
           @click="wb.cancelPage(wb.selectedPage.id)"
         >
           取消生成
         </n-button>
-        <n-button
-          v-else
-          size="tiny"
-          secondary
-          type="primary"
-          @click="wb.regenerateSelected()"
-        >
+        <n-button v-else size="tiny" secondary type="primary" @click="wb.regenerateSelected()">
           {{ wb.selectedHtml ? '重新生成' : '生成' }}
         </n-button>
       </template>

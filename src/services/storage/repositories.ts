@@ -224,6 +224,41 @@ export const pageRepo = {
 }
 
 export const versionRepo = {
+  async initializeHtml(projectId: string, pageId: string, html: string): Promise<PageVersion> {
+    if (!html.trim()) throw new Error('HTML 内容不能为空')
+    if (new TextEncoder().encode(html).length > 5 * 1024 * 1024)
+      throw new Error('HTML 文件不能超过 5 MB')
+    return db.transaction('rw', [db.pages, db.pageVersions], async () => {
+      const page = await db.pages.get(pageId)
+      if (!page || page.projectId !== projectId) throw new Error('页面不存在或不属于当前迭代')
+      if (page.spec.groupOnly) throw new Error('导航分组不能导入 HTML，请先改为普通页面')
+      if (page.genStatus === 'queued' || page.genStatus === 'generating')
+        throw new Error('页面正在生成或排队，请先停止')
+      if (page.currentVersionId || (await db.pageVersions.where('pageId').equals(pageId).count()))
+        throw new Error('页面已有内容，不能通过初始化导入覆盖')
+      return versionRepo.add(pageId, html, 'import', '手动导入 HTML 初始化页面')
+    })
+  },
+  async importLayrr(
+    projectId: string,
+    pageId: string,
+    baseline: string,
+    html: string,
+  ): Promise<PageVersion> {
+    return db.transaction('rw', [db.pages, db.pageVersions], async () => {
+      const page = await db.pages.get(pageId)
+      if (!page || page.projectId !== projectId || page.spec.groupOnly)
+        throw new Error('原页面已删除或不属于此迭代')
+      if (page.currentVersionId !== baseline)
+        throw new Error('页面已产生新版本，请重新打开 Layrr，避免覆盖其他修改')
+      if (page.genStatus === 'queued' || page.genStatus === 'generating')
+        throw new Error('页面仍在生成，请停止后再保存')
+      const original = await db.pageVersions.get(baseline)
+      if (!original || original.pageId !== pageId) throw new Error('原始版本不匹配')
+      if (!html.trim() || original.html === html) throw new Error('没有需要保存的修改')
+      return versionRepo.add(pageId, html, 'layrr', 'Layrr 局部修改')
+    })
+  },
   async listByPage(pageId: string): Promise<PageVersion[]> {
     const versions = await db.pageVersions.where('pageId').equals(pageId).sortBy('versionNumber')
     return versions.reverse()

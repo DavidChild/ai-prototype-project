@@ -65,5 +65,8 @@ export async function parseSSE(
     clearTimeout(timer)
   }
   if (timedOut) throw new LLMError('timeout', '响应超时：长时间未收到数据')
+  buf += decoder.decode()
+  // Some gateways close immediately after the final data line, without a newline.
+  if (buf.startsWith('data:')) dataLines.push(buf.slice(5).replace(/^ /, '').replace(/\r$/, ''))
   dispatch()
 }

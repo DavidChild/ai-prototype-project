@@ -1,5 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { useSettingsStore } from '@/stores/settings'
+import { normalizeImage } from '@/services/parsing/imageOps'
+import { imageToHtml } from '@/services/generation/imageToHtml'
 import { useMessage } from 'naive-ui'
 import type { Page, PageGenStatus } from '@/types/page'
 import { useWorkbenchStore } from '@/stores/workbench'
@@ -14,6 +17,159 @@ defineProps<{ statusMeta: Record<PageGenStatus, { label: string; color: string }
 const emit = defineEmits<{ add: [parentId: string]; remove: [page: Page] }>()
 const wb = useWorkbenchStore()
 const message = useMessage()
+const importShow = ref(false)
+const importTarget = ref<{ projectId: string; pageId: string; name: string } | null>(null)
+const importHtml = ref('')
+const importSaving = ref(false)
+const importReading = ref(false)
+const imageMode = ref(false)
+const referenceImage = ref<Blob | null>(null)
+const referenceUrl = ref('')
+const imageInstruction = ref('')
+const converting = ref(false)
+const generatedChars = ref(0)
+const currentSegment = ref(1)
+const modelOutput = ref('')
+const settings = useSettingsStore()
+let imageController: AbortController | undefined
+function clearReference() {
+  if (referenceUrl.value) URL.revokeObjectURL(referenceUrl.value)
+  referenceUrl.value = ''
+  referenceImage.value = null
+}
+onBeforeUnmount(() => {
+  imageController?.abort()
+  clearReference()
+})
+watch(
+  () => wb.project?.id,
+  () => {
+    imageController?.abort()
+    importShow.value = false
+  },
+)
+function openImport(page: Page, fromImage = false) {
+  imageController?.abort()
+  clearReference()
+  imageMode.value = fromImage
+  imageInstruction.value = ''
+  modelOutput.value = ''
+  importTarget.value = { projectId: page.projectId, pageId: page.id, name: page.spec.name }
+  importHtml.value = ''
+  importShow.value = true
+}
+async function readReference(event: Event) {
+  const input = event.target as HTMLInputElement,
+    file = input.files?.[0]
+  if (!file) return
+  const target = importTarget.value
+  importReading.value = true
+  try {
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type))
+      throw new Error('请选择 PNG、JPEG 或 WebP 图片')
+    if (file.size > 10 * 1024 * 1024) throw new Error('参考图不能超过 10 MB')
+    const image = await normalizeImage(file, 'upload')
+    if (!image) throw new Error('图片无法读取或尺寸过小（至少 32 × 32）')
+    if (target !== importTarget.value || !importShow.value) return
+    clearReference()
+    referenceImage.value = image.blob
+    referenceUrl.value = URL.createObjectURL(image.blob)
+    importHtml.value = ''
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '图片读取失败')
+  } finally {
+    importReading.value = false
+    input.value = ''
+  }
+}
+async function convertReference() {
+  const target = importTarget.value,
+    image = referenceImage.value
+  if (!target || !image || converting.value) return
+  const resolved = settings.resolveModel('generation', wb.project?.modelOverride)
+  if (!resolved) {
+    message.error('请先配置支持图片输入的页面生成模型')
+    return
+  }
+  const controller = new AbortController()
+  imageController = controller
+  modelOutput.value = ''
+  converting.value = true
+  generatedChars.value = 0
+  currentSegment.value = 1
+  try {
+    const html = await imageToHtml({
+      ...resolved,
+      image,
+      name: target.name,
+      instruction: imageInstruction.value,
+      maxTokens: settings.genParams.maxTokens,
+      signal: controller.signal,
+      onDelta: (text) => {
+        generatedChars.value += text.length
+      },
+      onOutput: (text) => {
+        modelOutput.value = text
+      },
+      onSegment: (segment) => {
+        currentSegment.value = segment
+      },
+    })
+    if (
+      !controller.signal.aborted &&
+      importTarget.value === target &&
+      importShow.value &&
+      wb.project?.id === target.projectId
+    ) {
+      importHtml.value = html
+      message.success('HTML 已生成，请检查后确认导入')
+    }
+  } catch (error) {
+    if (!controller.signal.aborted)
+      message.error(error instanceof Error ? error.message : '转换失败，请确认模型支持图片输入')
+  } finally {
+    if (imageController === controller) {
+      converting.value = false
+      imageController = undefined
+    }
+  }
+}
+async function readImportFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  const target = importTarget.value
+  if (!file || !target) return
+  importReading.value = true
+  try {
+    if (!/\.html?$/i.test(file.name)) throw new Error('请选择 .html 或 .htm 文件')
+    if (file.size > 5 * 1024 * 1024) throw new Error('HTML 文件不能超过 5 MB')
+    const text = await file.text()
+    if (importTarget.value === target && importShow.value) importHtml.value = text
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '文件读取失败')
+  } finally {
+    importReading.value = false
+    input.value = ''
+  }
+}
+async function confirmImport() {
+  const target = importTarget.value
+  if (!target || importSaving.value || importReading.value || converting.value) return
+  importSaving.value = true
+  try {
+    const html = importHtml.value
+    const parsed = new DOMParser().parseFromString(html, 'text/html')
+    if (!html.trim() || !/<[a-z][^>]*>/i.test(html) || !parsed.body.innerHTML.trim())
+      throw new Error('请输入包含页面内容的 HTML')
+    await wb.importPageHtml(target.projectId, target.pageId, html)
+    importShow.value = false
+    message.success('HTML 已导入，当前页面已初始化，可继续局部编辑')
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '导入失败')
+  } finally {
+    importSaving.value = false
+  }
+}
 const draggedId = ref<string | null>(null)
 const over = ref<{ id: string; position: PageDropPosition } | null>(null)
 const moveShow = ref(false)
@@ -285,16 +441,36 @@ async function reorder(page: Page, direction: number) {
             { label: '上移（含下级）', key: 'up' },
             { label: '下移（含下级）', key: 'down' },
             { label: '新增下级页面', key: 'add' },
+            {
+              label: '图片转 HTML',
+              key: 'image-html',
+              disabled:
+                !!page.spec.groupOnly ||
+                !!page.currentVersionId ||
+                ['queued', 'generating'].includes(page.genStatus),
+            },
+            {
+              label: '导入 HTML',
+              key: 'import',
+              disabled:
+                !!page.spec.groupOnly ||
+                !!page.currentVersionId ||
+                ['queued', 'generating'].includes(page.genStatus),
+            },
           ]"
           @select="
             (key: string) =>
               key === 'rename'
                 ? openRename(page)
-                : key === 'parent'
-                  ? openMove(page)
-                  : key === 'add'
-                    ? emit('add', page.spec.id)
-                    : reorder(page, key === 'up' ? -1 : 1)
+                : key === 'image-html'
+                  ? openImport(page, true)
+                  : key === 'import'
+                    ? openImport(page)
+                    : key === 'parent'
+                      ? openMove(page)
+                      : key === 'add'
+                        ? emit('add', page.spec.id)
+                        : reorder(page, key === 'up' ? -1 : 1)
           "
         >
           <n-button size="tiny" quaternary title="更多操作" :disabled="wb.hierarchySaving"
@@ -330,6 +506,106 @@ async function reorder(page: Page, direction: number) {
       移到一级菜单末尾（包含全部下级）
     </div>
   </div>
+  <n-modal
+    v-model:show="importShow"
+    preset="card"
+    :title="imageMode ? '图片转 HTML 初始化页面' : '导入 HTML 初始化页面'"
+    style="width: 720px; max-width: 95vw"
+    :mask-closable="false"
+    :closable="!importSaving && !importReading && !converting"
+    :close-on-esc="!importSaving && !importReading && !converting"
+  >
+    <n-space vertical>
+      <n-text>目标页面：{{ importTarget?.name }}</n-text>
+      <n-alert type="warning" :bordered="false"
+        >仅初始化当前项目版本中尚无内容的普通页面，不覆盖已有页面。请仅导入可信
+        HTML，页面中的脚本会在原型预览中运行；本地相对路径图片和样式不会随文件上传，建议使用自包含
+        HTML。</n-alert
+      >
+      <input
+        v-if="!imageMode"
+        type="file"
+        accept=".html,.htm,text/html"
+        :disabled="importSaving || importReading"
+        aria-label="选择 HTML 文件"
+        @change="readImportFile"
+      />
+      <n-text v-if="!imageMode" depth="3"
+        >上传 UTF-8 HTML 文件，或粘贴 HTML 源码（最多 5 MB）。不会调用 AI。</n-text
+      >
+      <template v-if="imageMode">
+        <n-alert type="info" :bordered="false"
+          >图片转 HTML 会调用当前项目的页面生成服务商，消耗
+          token；必须选择支持图片输入的视觉模型。点击“开始转换”会将参考图和补充要求发送至该服务商。结果为可编辑
+          HTML，不是把截图铺成背景，无法保证像素级一致。</n-alert
+        >
+        <n-text depth="3"
+          >当前模型：{{
+            settings.resolveModel('generation', wb.project?.modelOverride)?.model ?? '尚未配置'
+          }}。支持 PNG/JPEG/WebP（最多 10 MB），发送前会缩放到最长边 1280。</n-text
+        >
+        <input
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          aria-label="选择参考图片"
+          :disabled="converting || importSaving || importReading"
+          @change="readReference"
+        />
+        <img
+          v-if="referenceUrl"
+          :src="referenceUrl"
+          alt="参考图片预览"
+          style="max-width: 100%; max-height: 240px; object-fit: contain"
+        />
+        <n-input
+          v-model:value="imageInstruction"
+          placeholder="补充要求（可选）：例如保留文字、适配手机屏幕"
+          :disabled="converting || importSaving"
+        />
+        <n-space
+          ><n-button
+            type="primary"
+            :loading="converting"
+            :disabled="!referenceImage || importReading || importSaving || converting"
+            @click="convertReference"
+            >开始转换（调用 AI）</n-button
+          ><n-button v-if="converting" @click="imageController?.abort()"
+            >停止转换</n-button
+          ></n-space
+        >
+        <n-text v-if="converting" depth="3"
+          >正在流式输出第 {{ currentSegment }} 段，已接收 {{ generatedChars }} 字符；截断后最多续写
+          4 段，每段均消耗 token。完成后才可导入。</n-text
+        >
+        <details v-if="modelOutput" :open="converting">
+          <summary>模型原始回复（用于排查，未自动导入）</summary>
+          <n-input :value="modelOutput" type="textarea" readonly :rows="8" />
+        </details>
+      </template>
+      <n-input
+        v-model:value="importHtml"
+        type="textarea"
+        placeholder="粘贴 HTML 源码"
+        :rows="12"
+        :disabled="importSaving || importReading || converting"
+      />
+    </n-space>
+    <template #footer
+      ><n-space justify="end"
+        ><n-button
+          :disabled="importSaving || importReading || converting"
+          @click="importShow = false"
+          >取消</n-button
+        ><n-button
+          type="primary"
+          :loading="importSaving"
+          :disabled="!importHtml.trim() || importReading || converting"
+          @click="confirmImport"
+          >确认导入</n-button
+        ></n-space
+      ></template
+    >
+  </n-modal>
   <n-modal
     v-model:show="renameShow"
     preset="card"

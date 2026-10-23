@@ -8,6 +8,7 @@ import { useWorkbenchStore } from '@/stores/workbench'
 import { useSettingsStore } from '@/stores/settings'
 import { getStylePreset } from '@/data/stylePresets'
 import PagePanel from '@/components/workbench/PagePanel.vue'
+import ResizablePageSidebar from '@/components/workbench/ResizablePageSidebar.vue'
 import CanvasPanel from '@/components/workbench/CanvasPanel.vue'
 import RefineChat from '@/components/workbench/RefineChat.vue'
 import VersionList from '@/components/workbench/VersionList.vue'
@@ -121,9 +122,9 @@ watch(
     <n-spin v-else-if="wb.loading" class="load-error" />
 
     <div v-else :key="wb.project?.id" class="columns">
-      <aside class="col-left">
+      <ResizablePageSidebar>
         <PagePanel />
-      </aside>
+      </ResizablePageSidebar>
       <main class="col-center">
         <CanvasPanel />
       </main>
@@ -192,12 +193,6 @@ watch(
   flex: 1;
   min-height: 0;
   display: flex;
-}
-
-.col-left {
-  width: 260px;
-  flex-shrink: 0;
-  border-right: 1px solid var(--qp-border);
 }
 
 .col-center {

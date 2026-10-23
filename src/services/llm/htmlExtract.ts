@@ -9,7 +9,7 @@ export function extractHtml(raw: string): string {
     .filter((s) => /^<!doctype|^<html|^</i.test(s))
   if (fenced.length > 0) {
     const best = fenced.reduce((a, b) => (b.length > a.length ? b : a))
-    if (best.length > 100) return best
+    if (best) return best
   }
 
   const docMatch = cleaned.match(/<!doctype[\s\S]*<\/html>/i) ?? cleaned.match(/<html[\s\S]*<\/html>/i)

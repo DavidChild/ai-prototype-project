@@ -13,6 +13,7 @@ declare module 'vue' {
   export interface GlobalComponents {
     CanvasPanel: typeof import('./components/workbench/CanvasPanel.vue')['default']
     ExportMenu: typeof import('./components/workbench/ExportMenu.vue')['default']
+    LayrrEditor: typeof import('./components/workbench/LayrrEditor.vue')['default']
     ModelSelect: typeof import('./components/settings/ModelSelect.vue')['default']
     NAlert: typeof import('naive-ui')['NAlert']
     NButton: typeof import('naive-ui')['NButton']
@@ -60,6 +61,7 @@ declare module 'vue' {
     ProviderCard: typeof import('./components/settings/ProviderCard.vue')['default']
     ProviderForm: typeof import('./components/settings/ProviderForm.vue')['default']
     RefineChat: typeof import('./components/workbench/RefineChat.vue')['default']
+    ResizablePageSidebar: typeof import('./components/workbench/ResizablePageSidebar.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     SandboxFrame: typeof import('./components/workbench/SandboxFrame.vue')['default']
