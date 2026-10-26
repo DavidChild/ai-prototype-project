@@ -1,7 +1,11 @@
 import type { ChatMessage, ContentPart } from '@/types/llm'
+import type { PageGenerationMode } from '@/types/analysis'
 import type { ExtractedImage } from '@/types/parsing'
 import type { Platform, StyleSpec } from '@/types/project'
 import type { ProviderConfig } from '@/types/provider'
+import type { PageConstraints } from '@/types/generationConstraint'
+import { buildGenerationConstraints } from '@/prompts/generationConstraints'
+import { buildImportedPagesPrompt, type ImportedPagePromptContext } from '@/prompts/pageGeneration'
 import { blobToBase64 } from '@/utils/blob'
 import { buildRefineSystemPrompt, buildRefineUserPrompt } from '@/prompts/pageRefine'
 import { buildStyleFragment } from '@/prompts/stylePrompt'
@@ -19,6 +23,9 @@ export interface RefinePageInput {
   feedback: string
   /** 参考图（需视觉模型） */
   images?: ExtractedImage[]
+  constraints?: PageConstraints
+  importedPages?: ImportedPagePromptContext[]
+  generationMode?: PageGenerationMode
   maxTokens: number
   temperature: number
   tailwindCdnUrl: string
@@ -31,7 +38,16 @@ export async function refinePageHtml(input: RefinePageInput): Promise<string> {
   const client = createClient(input.provider)
   const styleFragment = buildStyleFragment(input.styleSpec, input.platform)
   const images = input.images ?? []
-  const userText = buildRefineUserPrompt(input.currentHtml, input.feedback, images.length)
+  const userText = [
+    buildRefineUserPrompt(input.currentHtml, input.feedback, images.length),
+    buildGenerationConstraints(input.constraints),
+    buildImportedPagesPrompt({
+      importedPages: input.importedPages,
+      generationMode: input.generationMode,
+    }),
+  ]
+    .filter(Boolean)
+    .join('\n\n')
 
   let content: ChatMessage['content'] = userText
   if (images.length > 0) {

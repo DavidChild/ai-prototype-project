@@ -11,7 +11,15 @@ export async function exportPagePng(
   fileName: string,
   backgroundColor = '#ffffff',
 ): Promise<void> {
-  await withExportIframe(html, platform, async (doc, iframe) => {
+  downloadBlob(await buildPagePng(html, platform, backgroundColor), fileName)
+}
+
+export async function buildPagePng(
+  html: string,
+  platform: Platform,
+  backgroundColor = '#ffffff',
+): Promise<Blob> {
+  return withExportIframe(html, platform, async (doc, iframe) => {
     const width = CANVAS_WIDTH[platform]
     const height = Math.min(
       MAX_EXPORT_HEIGHT,
@@ -26,6 +34,6 @@ export async function exportPagePng(
       backgroundColor,
     })
     if (!blob) throw new Error('截图生成失败')
-    downloadBlob(blob, fileName)
+    return blob
   })
 }

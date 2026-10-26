@@ -157,7 +157,7 @@ watch(
           size="small"
           style="flex: 1"
           :loading="wb.refining"
-          :disabled="!input.trim() || !wb.selectedHtml"
+          :disabled="!input.trim() || !wb.selectedHtml || wb.localEditingPageId === wb.selectedPageId"
           @click="send"
         >
           发送修改要求

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { useDialog, useMessage } from 'naive-ui'
+import { useDialog, useMessage, type TreeSelectOption } from 'naive-ui'
 import type { Page, PageGenStatus } from '@/types/page'
 import { useWorkbenchStore } from '@/stores/workbench'
 import PageTreeList from './PageTreeList.vue'
@@ -13,14 +13,91 @@ const addShow = ref(false)
 const addName = ref('')
 const addParentId = ref<string>('')
 const addGroupOnly = ref(false)
+const expandedParentKeys = ref<Array<string | number>>([])
 
-const parentOptions = computed(() => [
-  { label: '作为一级菜单', value: '' },
-  ...wb.pageRows.map(({ page, depth }) => ({
-    label: `${'　'.repeat(depth)}${page.spec.name} 下的页面`,
-    value: page.spec.id,
-  })),
-])
+function requestRetryFailed() {
+  const hasExistingHtml = wb.pages.some(
+    (page) => page.genStatus === 'failed' && wb.htmlByPage.has(page.id),
+  )
+  if (!hasExistingHtml) {
+    wb.retryFailed()
+    return
+  }
+  dialog.warning({
+    title: '确认重新生成失败页面',
+    content: '部分失败页面已有可展示的 AI 原型内容，重试成功后会覆盖这些页面的当前内容，但不会删除页面配置和历史版本。是否继续？',
+    positiveText: '继续生成',
+    negativeText: '取消',
+    onPositiveClick: () => wb.retryFailed(),
+  })
+}
+
+const ROOT_PARENT_KEY = '__quickpage_root__'
+
+const parentTreeOptions = computed<TreeSelectOption[]>(() => {
+  const ids = new Set(wb.pages.map((page) => page.spec.id))
+  const children = new Map<string, Page[]>()
+  for (const page of wb.pages) {
+    const parent =
+      page.spec.parentId && ids.has(page.spec.parentId) ? page.spec.parentId : ROOT_PARENT_KEY
+    const siblings = children.get(parent) ?? []
+    siblings.push(page)
+    children.set(parent, siblings)
+  }
+  const build = (page: Page, ancestors: Set<string>): TreeSelectOption => {
+    const key = page.spec.id
+    const nextAncestors = new Set(ancestors).add(key)
+    const nested = (children.get(key) ?? [])
+      .filter((child) => !nextAncestors.has(child.spec.id))
+      .map((child) => build(child, nextAncestors))
+    return {
+      key,
+      label: `${page.spec.groupOnly ? '导航分组' : '页面'} · ${page.spec.name}`,
+      ...(nested.length ? { children: nested } : {}),
+    }
+  }
+  return [
+    {
+      key: ROOT_PARENT_KEY,
+      label: '一级菜单（项目根层级）',
+      children: (children.get(ROOT_PARENT_KEY) ?? []).map((page) => build(page, new Set())),
+    },
+  ]
+})
+
+const selectedParentKey = computed({
+  get: () => addParentId.value || ROOT_PARENT_KEY,
+  set: (value: string | number | null) => {
+    addParentId.value = value && value !== ROOT_PARENT_KEY ? String(value) : ''
+  },
+})
+
+const selectedParentPath = computed(() => {
+  if (!addParentId.value) return '项目根层级 › 一级菜单'
+  const names: string[] = []
+  const seen = new Set<string>()
+  let current: string | undefined = addParentId.value
+  while (current && !seen.has(current)) {
+    seen.add(current)
+    const page = wb.pages.find((item) => item.spec.id === current)
+    if (!page) break
+    names.unshift(page.spec.name)
+    current = page.spec.parentId
+  }
+  return `项目根层级 › ${names.join(' › ')} › 新页面`
+})
+
+function parentBranchKeys(parentId: string): Array<string | number> {
+  const keys: Array<string | number> = [ROOT_PARENT_KEY]
+  const seen = new Set<string>()
+  let current: string | undefined = parentId
+  while (current && !seen.has(current)) {
+    seen.add(current)
+    keys.push(current)
+    current = wb.pages.find((page) => page.spec.id === current)?.spec.parentId
+  }
+  return keys
+}
 
 const STATUS_META: Record<PageGenStatus, { label: string; color: string }> = {
   idle: { label: '未生成', color: 'rgba(127,127,127,0.45)' },
@@ -88,6 +165,7 @@ function submitAdd() {
 
 function openAdd(parentId = '') {
   addParentId.value = parentId
+  expandedParentKeys.value = parentBranchKeys(parentId)
   addGroupOnly.value = false
   addShow.value = true
 }
@@ -115,7 +193,7 @@ function openAdd(parentId = '') {
             size="tiny"
             type="warning"
             secondary
-            @click="wb.retryFailed()"
+            @click="requestRetryFailed"
           >
             重试失败
           </n-button>
@@ -163,8 +241,22 @@ function openAdd(parentId = '') {
         <n-form-item label="名称">
           <n-input v-model:value="addName" placeholder="如：会员中心" @keyup.enter="submitAdd" />
         </n-form-item>
-        <n-form-item label="层级">
-          <n-select v-model:value="addParentId" :options="parentOptions" />
+        <n-form-item label="创建位置">
+          <div class="parent-picker">
+            <n-tree-select
+              v-model:value="selectedParentKey"
+              v-model:expanded-keys="expandedParentKeys"
+              :options="parentTreeOptions"
+              show-line
+              show-path
+              filterable
+              separator=" › "
+              placeholder="选择一级菜单或上级页面"
+            />
+            <n-text depth="3" class="parent-path">
+              {{ selectedParentPath }}
+            </n-text>
+          </div>
         </n-form-item>
         <n-form-item v-if="!addParentId" label="类型">
           <n-checkbox v-model:checked="addGroupOnly">仅作导航分组，不生成页面</n-checkbox>
@@ -270,5 +362,18 @@ function openAdd(parentId = '') {
 .panel-foot {
   padding: 10px 14px;
   border-top: 1px solid var(--qp-border);
+}
+
+.parent-picker {
+  width: 100%;
+  min-width: 0;
+}
+
+.parent-path {
+  display: block;
+  margin-top: 7px;
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 </style>

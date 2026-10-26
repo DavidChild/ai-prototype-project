@@ -60,6 +60,14 @@ test('Layrr import is bound to original iteration and baseline; conflicts never 
     assert.equal(next.versionNumber, edited.versionNumber + 1)
     assert.equal(next.feedbackText, '继续调整间距')
     assert.equal((await pageRepo.get('page')).currentVersionId, next.id)
+    const ai = await versionRepo.importLayrr('iteration-a', 'page', next.id, '<p>AI edited</p>', '调整标题', 'ai-submission', 'ai-local')
+    assert.equal(ai.source, 'ai-local')
+    assert.equal(ai.versionNumber, next.versionNumber + 1)
+    assert.equal((await versionRepo.importLayrr('iteration-a', 'page', next.id, ai.html, '调整标题', 'ai-submission', 'ai-local')).id, ai.id)
+    await assert.rejects(
+      versionRepo.importLayrr('iteration-a', 'page', next.id, ai.html, '调整标题', 'ai-submission', 'layrr'),
+      /不一致/,
+    )
   } finally {
     await db.delete()
   }

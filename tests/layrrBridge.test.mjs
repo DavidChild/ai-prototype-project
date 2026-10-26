@@ -136,6 +136,7 @@ test('Layrr workspaces serve official overlay, accept local jobs and isolate fil
   assert.equal(queued.submissionId, submission.submissionId)
   const pending = (await request('/' + session.id)).data.submission
   assert.equal(pending.feedbackText, '调整标题尺寸和间距')
+  assert.equal(pending.source, 'layrr')
   assert.equal(pending.html, submission.html)
   assert.equal((await manualSave(submission)).status, 200, 'a lost POST response can be retried safely')
   assert.equal((await manualSave({ ...submission, html: 'changed retry' })).status, 409)
@@ -186,12 +187,14 @@ test('Layrr workspaces serve official overlay, accept local jobs and isolate fil
     ).status,
     200,
   )
-  assert.equal(JSON.parse((await resultPromise)[0]).success, true)
   assert.match((await request('/' + session.id)).data.html, /new/)
   const aiSubmission = (await request('/' + session.id)).data.submission
   assert.equal(aiSubmission.id, job.id)
   assert.equal(aiSubmission.feedbackText, 'change text')
+  assert.equal(aiSubmission.source, 'ai-local')
+  assert.equal((await fetch(session.url + '__layrr__/edit-status').then((response) => response.json())).success, null)
   await request('/' + session.id, 'POST', { submissionId: aiSubmission.id, success: true, message: '已保存为 v3' })
+  assert.equal(JSON.parse((await resultPromise)[0]).success, true)
   assert.equal(
     (await request('/' + session.id, 'POST', { jobId: job.id, success: true, html: 'stale' }))
       .status,

@@ -9,10 +9,12 @@ import { useSettingsStore } from '@/stores/settings'
 import { getStylePreset } from '@/data/stylePresets'
 import PagePanel from '@/components/workbench/PagePanel.vue'
 import ResizablePageSidebar from '@/components/workbench/ResizablePageSidebar.vue'
+import ResizableInspectorPanel from '@/components/workbench/ResizableInspectorPanel.vue'
 import CanvasPanel from '@/components/workbench/CanvasPanel.vue'
 import RefineChat from '@/components/workbench/RefineChat.vue'
 import VersionList from '@/components/workbench/VersionList.vue'
 import PageInfoForm from '@/components/workbench/PageInfoForm.vue'
+import GlobalConstraints from '@/components/workbench/GlobalConstraints.vue'
 import ExportMenu from '@/components/workbench/ExportMenu.vue'
 import ModelSelect from '@/components/settings/ModelSelect.vue'
 
@@ -22,12 +24,14 @@ const wb = useWorkbenchStore()
 const settings = useSettingsStore()
 const iterationSelection = useIterationSelectionStore()
 const iterationOptions = ref<{ label: string; value: string }[]>([])
+const showGlobalConstraints = ref(false)
 const dialog = useDialog()
 const message = useMessage()
 watch(
   () => wb.project?.id,
   async (id) => {
     const project = wb.project
+    showGlobalConstraints.value = false
     iterationOptions.value = []
     if (!project || !id) return
     iterationSelection.select(project.familyId ?? id, id)
@@ -94,6 +98,15 @@ watch(
         {{ getStylePreset(wb.project.styleSpec.presetId)?.name ?? '自定义风格' }}
         <span class="style-dot" :style="{ background: wb.project.styleSpec.tokens.primaryColor }" />
       </n-tag>
+      <n-button
+        size="small"
+        secondary
+        :disabled="!wb.project || wb.loading || !!wb.loadError"
+        style="flex-shrink: 0"
+        @click="showGlobalConstraints = true"
+      >
+        全局约束
+      </n-button>
       <div style="flex: 1" />
       <div class="topbar-model">
         <n-text depth="3" style="font-size: 12px; flex-shrink: 0">生成模型</n-text>
@@ -110,6 +123,18 @@ watch(
       </n-button>
       <n-button size="small" quaternary @click="router.push('/settings')">设置</n-button>
     </header>
+
+    <n-modal
+      v-model:show="showGlobalConstraints"
+      preset="card"
+      title="全局约束"
+      :mask-closable="false"
+      style="width: min(860px, 94vw)"
+    >
+      <div class="global-constraints-panel">
+        <GlobalConstraints v-if="showGlobalConstraints && wb.project" :key="wb.project.id" />
+      </div>
+    </n-modal>
 
     <div v-if="wb.loadError" class="load-error">
       <n-result status="404" title="项目不存在" :description="wb.loadError">
@@ -128,7 +153,7 @@ watch(
       <main class="col-center">
         <CanvasPanel />
       </main>
-      <aside class="col-right">
+      <ResizableInspectorPanel>
         <n-tabs type="line" size="small" default-value="refine" class="inspector-tabs">
           <n-tab-pane name="refine" tab="微调">
             <RefineChat />
@@ -140,7 +165,7 @@ watch(
             <PageInfoForm />
           </n-tab-pane>
         </n-tabs>
-      </aside>
+      </ResizableInspectorPanel>
     </div>
   </div>
 </template>
@@ -182,6 +207,11 @@ watch(
   width: 400px;
 }
 
+.global-constraints-panel {
+  height: min(64vh, 640px);
+  min-height: 240px;
+}
+
 .load-error {
   flex: 1;
   display: flex;
@@ -200,12 +230,6 @@ watch(
   min-width: 0;
 }
 
-.col-right {
-  width: 330px;
-  flex-shrink: 0;
-  border-left: 1px solid var(--qp-border);
-}
-
 .inspector-tabs {
   height: 100%;
   display: flex;
@@ -213,7 +237,7 @@ watch(
 }
 
 .inspector-tabs :deep(.n-tabs-nav) {
-  padding: 0 14px;
+  padding: 0 112px 0 14px;
   flex-shrink: 0;
 }
 

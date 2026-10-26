@@ -4,7 +4,7 @@ import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import test from 'node:test'
 import { runInNewContext } from 'node:vm'
-import { adaptLayrrOverlay } from '../server/layrrOverlay.ts'
+import { adaptLayrrOverlay, adaptLayrrWorkspaceOverlay } from '../server/layrrOverlay.ts'
 
 const require = createRequire(import.meta.url)
 const original = await readFile(
@@ -52,4 +52,36 @@ test('selector escapes Tailwind classes and IDs, retaining sibling positions', (
 
 test('unsupported overlay source fails explicitly instead of silently mispatching', () => {
   assert.throws(() => adaptLayrrOverlay('unrecognised overlay'), /不兼容/)
+})
+
+test('embedded workspace starts in edit mode and deduplicates WebSocket/poll results before reload', () => {
+  const adapted = adaptLayrrWorkspaceOverlay(original)
+  new Function(adapted)
+  assert.match(adapted, /if \(!saved.mode\) saved.mode = "edit"/)
+  const start = adapted.indexOf('    function onEditResult(msg) {')
+  const end = adapted.indexOf('    function connectWs()', start)
+  const app2 = { lastEditTimestamp: 0 }
+  let saves = 0
+  let toasts = 0
+  const onEditResult = runInNewContext(adapted.slice(start, end) + 'onEditResult', {
+    app2,
+    save2() { saves++ },
+    stopPolling() {},
+    toast2() { toasts++ },
+  })
+  onEditResult({ timestamp: 100, success: false, message: 'retry' })
+  onEditResult({ timestamp: 100, success: false, message: 'retry' })
+  assert.equal(app2.lastEditTimestamp, 100)
+  assert.equal(saves, 1)
+  assert.equal(toasts, 1)
+})
+
+test('workspace toasts sit above the editor bar at the top and wrap long error text', () => {
+  const adapted = adaptLayrrWorkspaceOverlay(original)
+  assert.match(adapted, /#\$\{L\}-toasts\{position:fixed;top:16px;bottom:auto;right:16px;z-index:1000000;/)
+  assert.match(adapted, /#\$\{L\}-bar\{\s*position:fixed;bottom:16px;right:16px;z-index:999999;/)
+  assert.match(adapted, /max-width:min\(420px,calc\(100vw - 32px\)\)/)
+  assert.match(adapted, /\.\$\{L\}-toast span\{min-width:0;white-space:normal;overflow-wrap:anywhere\}/)
+  assert.match(adapted, /text\.textContent = String\(msg\)/)
+  assert.doesNotMatch(adapted, /el\.innerHTML = `<i class="\$\{ic\}"><\/i><span>\$\{msg\}<\/span>`/)
 })

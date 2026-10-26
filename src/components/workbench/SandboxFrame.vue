@@ -2,7 +2,30 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { Platform } from '@/types/project'
 
-const props = defineProps<{ html: string; platform: Platform; zoom: number | 'fit' }>()
+const props = defineProps<{
+  html: string
+  platform: Platform
+  zoom: number | 'fit'
+  previewUrl?: string
+}>()
+
+// Only the isolated bridge origin can retain its origin for Layrr's WebSocket.
+const isolatedPreview = computed(() => {
+  if (!props.previewUrl) return ''
+  try {
+    const url = new URL(props.previewUrl)
+    if (
+      url.protocol === 'http:' &&
+      url.hostname === '127.0.0.1' && url.port &&
+      url.origin !== window.location.origin &&
+      !url.username && !url.password &&
+      /^\/preview\/[a-f0-9]{48}\/$/.test(url.pathname)
+    ) return url.href
+  } catch {
+    // Fall back to the opaque-origin HTML preview.
+  }
+  return ''
+})
 
 const containerEl = ref<HTMLElement | null>(null)
 const containerSize = ref({ w: 800, h: 600 })
@@ -40,7 +63,22 @@ const scale = computed(() => {
       :style="{ width: base.w * scale + 'px', height: base.h * scale + 'px' }"
     >
       <iframe
+        v-if="isolatedPreview"
         class="frame"
+        title="AI 工作区原型预览"
+        sandbox="allow-scripts allow-same-origin"
+        referrerpolicy="no-referrer"
+        :src="isolatedPreview"
+        :style="{
+          width: base.w + 'px',
+          height: base.h + 'px',
+          transform: `scale(${scale})`,
+        }"
+      />
+      <iframe
+        v-else
+        class="frame"
+        title="原型预览"
         sandbox="allow-scripts"
         :srcdoc="html"
         :style="{

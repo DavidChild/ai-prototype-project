@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatRequest } from '@/types/llm'
+import type { ChatMessage, ChatRequest, ContentPart } from '@/types/llm'
 import type { PageSpec } from '@/types/analysis'
 import type { Platform, StyleSpec } from '@/types/project'
 import type { ProviderConfig } from '@/types/provider'
@@ -74,6 +74,21 @@ export interface GeneratePageInput {
 export async function generatePageHtml(input: GeneratePageInput): Promise<string> {
   const client = createClient(input.provider)
   const styleFragment = buildStyleFragment(input.styleSpec, input.platform)
+  const text = buildPageUserPrompt(input.page, input.context)
+  const reference = input.page.referenceDesign
+  if (
+    reference &&
+    (!['image/png', 'image/jpeg', 'image/webp'].includes(reference.mimeType) ||
+      !reference.base64 ||
+      reference.base64.length > Math.ceil((2 * 1024 * 1024) / 3) * 4)
+  )
+    throw new LLMError('bad_request', '页面参考图无效或过大，请重新上传参考图')
+  const content: string | ContentPart[] = reference
+    ? [
+        { type: 'text', text },
+        { type: 'image', mimeType: reference.mimeType, base64: reference.base64 },
+      ]
+    : text
   const callbacks: ChatOptions = {
     signal: input.signal,
     onDelta: input.onDelta,
@@ -83,11 +98,16 @@ export async function generatePageHtml(input: GeneratePageInput): Promise<string
     client,
     {
       model: input.model,
-      system: buildPageSystemPrompt(styleFragment, input.platform),
+      system: buildPageSystemPrompt(
+        styleFragment,
+        input.platform,
+        !!reference,
+        input.page.constraints?.mode === 'custom' && !!input.page.constraints.items.length,
+      ),
       maxTokens: input.maxTokens,
       temperature: input.temperature,
     },
-    [{ role: 'user', content: buildPageUserPrompt(input.page, input.context) }],
+    [{ role: 'user', content }],
     callbacks,
   )
   return normalizeHtml(html, {

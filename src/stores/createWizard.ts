@@ -14,6 +14,7 @@ import {
 import { db, type SourceDoc, type StoredAsset } from '@/services/storage/db'
 import { assetRepo, docRepo, pageRepo, projectRepo } from '@/services/storage/repositories'
 import { estimateTokens, truncateStructured } from '@/utils/tokenBudget'
+import { uniquePageName } from '@/utils/pageName'
 import { useSettingsStore } from './settings'
 
 export interface WizardFile {
@@ -172,6 +173,12 @@ export const useCreateWizardStore = defineStore('createWizard', () => {
   async function createProject(): Promise<string> {
     if (!analysis.value) throw new Error('需求理解结果为空')
     const a = JSON.parse(JSON.stringify(analysis.value)) as RequirementAnalysis
+    const usedPageNames: string[] = []
+    a.pages = a.pages.map((spec) => {
+      const name = uniquePageName(spec.name, usedPageNames, 'v1.0')
+      usedPageNames.push(name)
+      return { ...spec, name }
+    })
     const projectId = nanoid()
     const now = Date.now()
     const project: Project = {

@@ -67,12 +67,18 @@ function onKeydown(event: KeyboardEvent) {
 onMounted(() => {
   const parent = sidebar.value?.parentElement
   if (!parent) return
+  const inspector = parent.querySelector<HTMLElement>('#inspector-panel')
   const measure = () => {
-    // Reserve the 330px inspector and at least 320px for the preview.
-    maxWidth.value = Math.max(MIN_WIDTH, Math.min(520, parent.clientWidth - 330 - 320 - 6))
+    const inspectorWidth = inspector?.offsetWidth ?? 330
+    // Reserve the inspector, both resize handles and at least 320px for the preview.
+    maxWidth.value = Math.max(
+      MIN_WIDTH,
+      Math.min(520, parent.clientWidth - inspectorWidth - 320 - 12),
+    )
   }
   observer = new ResizeObserver(measure)
   observer.observe(parent)
+  if (inspector) observer.observe(inspector)
   measure()
 })
 onBeforeUnmount(() => {

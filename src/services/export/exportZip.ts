@@ -56,6 +56,17 @@ export async function exportProjectZip(
   items: { page: Page; html: string; groupName: string }[],
   opts: { inlineTailwind: boolean; onProgress?: (done: number, total: number) => void },
 ): Promise<void> {
+  downloadBlob(
+    await buildProjectZip(project, items, opts),
+    `${sanitizeFileName(project.name)}-UI设计.zip`,
+  )
+}
+
+export async function buildProjectZip(
+  project: Project,
+  items: { page: Page; html: string; groupName: string }[],
+  opts: { inlineTailwind: boolean; onProgress?: (done: number, total: number) => void },
+): Promise<Blob> {
   const zip = new JSZip()
   const used = new Set<string>()
   const entries: IndexEntry[] = []
@@ -76,6 +87,5 @@ export async function exportProjectZip(
     opts.onProgress?.(done, items.length)
   }
   zip.file('index.html', buildIndexHtml(project, entries))
-  const blob = await zip.generateAsync({ type: 'blob' })
-  downloadBlob(blob, `${sanitizeFileName(project.name)}-UI设计.zip`)
+  return zip.generateAsync({ type: 'blob' })
 }

@@ -6,14 +6,21 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer, WebSocket } from 'ws'
 import type { Plugin } from 'vite'
-import { adaptLayrrOverlay } from './layrrOverlay'
+import { adaptLayrrWorkspaceOverlay } from './layrrOverlay'
 import { htmlRevision, manualEditorShell, validateManualSave } from './layrrManual'
 import { gridstackEditorShell } from './gridstackEditor'
 
 const require = createRequire(import.meta.url)
 const LIMIT = 5 * 1024 * 1024
+const IDLE_SESSION_MS = 10 * 60 * 1000
 type Edit = { instruction: string; selector: string; elements?: { selector: string }[] }
-type Submission = { id: string; html: string; feedbackText: string }
+type Submission = {
+  id: string
+  html: string
+  feedbackText: string
+  source: 'layrr' | 'ai-local'
+  originalHtml?: string
+}
 type SubmissionResult = { id: string; success: boolean; message: string; revision: string; feedbackText: string }
 function submissionFor(input: Record<string, unknown>, html: string): Submission | null {
   if (input.submit !== true) return null
@@ -21,7 +28,7 @@ function submissionFor(input: Record<string, unknown>, html: string): Submission
   if (!feedbackText || feedbackText.length > 500) throw new Error('请输入 1–500 字的版本修改备注')
   const id = input.submissionId ?? randomBytes(12).toString('hex')
   if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{16,100}$/.test(id)) throw new Error('无效的提交标识')
-  return { id, html, feedbackText }
+  return { id, html, feedbackText, source: 'layrr' }
 }
 async function saveDocument(session: {
   file: string
@@ -88,12 +95,24 @@ export function layrrBridgePlugin(): Plugin {
           job: { id: string; edit: Edit; delivered: boolean } | null
           lastResult: { success: boolean; message: string; timestamp: number } | null
           sockets: Set<WebSocket>
+          lastAccessAt: number
           close: () => void
         }
       >()
       vite.httpServer?.once('close', () => {
         for (const session of sessions.values()) session.close()
       })
+      const cleanupIdleSessions = () => {
+        const now = Date.now()
+        for (const [id, session] of sessions) {
+          if (now - session.lastAccessAt <= IDLE_SESSION_MS) continue
+          session.close()
+          sessions.delete(id)
+        }
+      }
+      const cleanupTimer = setInterval(cleanupIdleSessions, 60_000)
+      cleanupTimer.unref?.()
+      vite.httpServer?.once('close', () => clearInterval(cleanupTimer))
       vite.middlewares.use('/api/layrr', async (req, res) => {
         try {
           // No CORS, cookie authentication or arbitrary filesystem access.
@@ -108,6 +127,7 @@ export function layrrBridgePlugin(): Plugin {
           }
           const parts = (req.url ?? '').split('?')[0]!.split('/').filter(Boolean)
           if (req.method === 'POST' && parts.length === 0) {
+            cleanupIdleSessions()
             const input = await body(req)
             if (
               typeof input.html !== 'string' ||
@@ -124,7 +144,7 @@ export function layrrBridgePlugin(): Plugin {
             const file = join(folder, 'index.html')
             await writeFile(file, input.html, 'utf8')
             const overlay = join(require.resolve('layrr/package.json'), '..', 'dist', 'overlay.js')
-            const overlaySource = adaptLayrrOverlay(await readFile(overlay, 'utf8'))
+            const overlaySource = adaptLayrrWorkspaceOverlay(await readFile(overlay, 'utf8'))
             const prefix = `/preview/${id}`
             const sockets = new Set<WebSocket>()
             const server = createServer(async (previewReq, previewRes) => {
@@ -307,6 +327,7 @@ export function layrrBridgePlugin(): Plugin {
                     )
                       throw new Error('无效修改请求')
                     session.job = { id: randomBytes(12).toString('hex'), edit, delivered: false }
+                    session.lastResult = null
                   } catch (error) {
                     ws.send(
                       JSON.stringify({
@@ -338,6 +359,7 @@ export function layrrBridgePlugin(): Plugin {
               job: null,
               lastResult: null,
               sockets,
+              lastAccessAt: Date.now(),
               close: () => {
                 for (const ws of sockets) ws.terminate()
                 wss.close()
@@ -353,6 +375,7 @@ export function layrrBridgePlugin(): Plugin {
             json(res, { error: '工作区已关闭，请重新打开' }, 404)
             return
           }
+          session.lastAccessAt = Date.now()
           if (parts[1] === 'document') {
             if (req.method === 'GET') {
               const html = await readFile(session.file, 'utf8')
@@ -402,6 +425,14 @@ export function layrrBridgePlugin(): Plugin {
                 revision: htmlRevision(session.submission.html),
                 feedbackText: session.submission.feedbackText,
               }
+              if (session.submission.source === 'ai-local') {
+                if (!result.success && session.submission.originalHtml !== undefined)
+                  await writeFile(session.file, session.submission.originalHtml, 'utf8')
+                session.lastResult = { success: result.success, message: result.message, timestamp: Date.now() }
+                for (const ws of session.sockets)
+                  if (ws.readyState === WebSocket.OPEN)
+                    ws.send(JSON.stringify({ type: 'edit-result', ...session.lastResult }))
+              }
               session.submissionResults.set(result.id, result)
               if (session.submissionResults.size > 20)
                 session.submissionResults.delete(session.submissionResults.keys().next().value!)
@@ -413,12 +444,18 @@ export function layrrBridgePlugin(): Plugin {
             if (input.success === true) {
               if (typeof input.html !== 'string' || !input.html.trim())
                 throw new Error('修改内容为空')
+              const originalHtml = await readFile(session.file, 'utf8')
               await writeFile(session.file, input.html, 'utf8')
               session.submission = {
                 id: session.job.id,
                 html: input.html,
                 feedbackText: session.job.edit.instruction.trim().slice(0, 500),
+                source: 'ai-local',
+                originalHtml,
               }
+              session.job = null
+              json(res, { ok: true, submission: session.submission })
+              return
             }
             session.lastResult = {
               success: input.success === true,

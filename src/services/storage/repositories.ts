@@ -3,6 +3,8 @@ import { db, type SourceDoc, type StoredAsset } from './db'
 import type { Project } from '@/types/project'
 import type { Page, PageVersion, PageVersionSource } from '@/types/page'
 import { movePageTree } from '@/utils/pageTree'
+import type { GenerationConstraint } from '@/types/generationConstraint'
+import { validateConstraint } from '@/prompts/generationConstraints'
 
 const MAX_VERSIONS_PER_PAGE = 20
 
@@ -50,6 +52,12 @@ export const projectRepo = {
         if (pages.some((p) => p.genStatus === 'queued' || p.genStatus === 'generating'))
           throw new Error('来源版本仍在生成，请先停止生成或等待完成')
         const pageIds = new Map(pages.map((p) => [p.id, nanoid()]))
+        const remapConstraint = (item: GenerationConstraint): GenerationConstraint => ({
+          ...item,
+          sourcePageId: item.sourcePageId ? pageIds.get(item.sourcePageId) : undefined,
+        })
+        if (target.generationConstraints)
+          target.generationConstraints = target.generationConstraints.map(remapConstraint)
         const versions = await db.pageVersions
           .where('pageId')
           .anyOf([...pageIds.keys()])
@@ -64,7 +72,32 @@ export const projectRepo = {
             ...p,
             id: pageIds.get(p.id)!,
             projectId: target.id,
+            spec: {
+              ...p.spec,
+              ...(p.spec.constraints
+                ? {
+                    constraints: {
+                      ...p.spec.constraints,
+                      items: p.spec.constraints.items.map(remapConstraint),
+                    },
+                  }
+                : {}),
+              ...(p.spec.importedPages
+                ? {
+                    importedPages: p.spec.importedPages
+                      .map((reference) => ({
+                        ...reference,
+                        pageId: pageIds.get(reference.pageId),
+                      }))
+                      .filter(
+                        (reference): reference is typeof reference & { pageId: string } =>
+                          !!reference.pageId,
+                      ),
+                  }
+                : {}),
+            },
             currentVersionId: p.currentVersionId ? versionIds.get(p.currentVersionId) : undefined,
+            reviewPending: false,
             updatedAt: now,
           })),
         )
@@ -110,6 +143,43 @@ export const projectRepo = {
     await db.projects.update(id, { ...patch, updatedAt: Date.now() })
   },
 
+  async saveConstraint(
+    projectId: string,
+    item: GenerationConstraint,
+  ): Promise<GenerationConstraint[]> {
+    validateConstraint(item)
+    return db.transaction('rw', db.projects, async () => {
+      const project = await db.projects.get(projectId)
+      if (!project) throw new Error('项目不存在，请重新打开项目')
+      const items = [...(project.generationConstraints ?? [])]
+      if (
+        items.some(
+          (existing) => existing.id !== item.id && existing.name.trim() === item.name.trim(),
+        )
+      )
+        throw new Error('已存在同名全局约束，请使用其他名称')
+      const index = items.findIndex((existing) => existing.id === item.id)
+      const saved = { ...item, name: item.name.trim(), updatedAt: Date.now() }
+      if (index < 0) items.push(saved)
+      else items[index] = saved
+      await db.projects.update(projectId, {
+        generationConstraints: items,
+        updatedAt: saved.updatedAt,
+      })
+      return items
+    })
+  },
+
+  async removeConstraint(projectId: string, id: string): Promise<GenerationConstraint[]> {
+    return db.transaction('rw', db.projects, async () => {
+      const project = await db.projects.get(projectId)
+      if (!project) throw new Error('项目不存在，请重新打开项目')
+      const items = (project.generationConstraints ?? []).filter((item) => item.id !== id)
+      await db.projects.update(projectId, { generationConstraints: items, updatedAt: Date.now() })
+      return items
+    })
+  },
+
   /** 切换可见性不改变内容更新时间或项目排列顺序。 */
   async setHidden(id: string, hidden: boolean): Promise<void> {
     const updated = await db.projects.update(id, { hidden })
@@ -135,7 +205,11 @@ export const projectRepo = {
 
 export const pageRepo = {
   /** Copy only this page and its current saved content, with independent IDs and history. */
-  async copy(projectId: string, pageId: string, name: string): Promise<{
+  async copy(
+    projectId: string,
+    pageId: string,
+    name: string,
+  ): Promise<{
     page: Page
     pages: Page[]
     version?: PageVersion
@@ -151,15 +225,24 @@ export const pageRepo = {
       if (source.spec.groupOnly) throw new Error('请选择普通页面进行复制')
       if (source.genStatus === 'queued' || source.genStatus === 'generating')
         throw new Error('原页面正在生成或排队，请停止后再复制')
-      const current = source.currentVersionId ? await db.pageVersions.get(source.currentVersionId) : undefined
+      const current = source.currentVersionId
+        ? await db.pageVersions.get(source.currentVersionId)
+        : undefined
       if (source.currentVersionId && (!current || current.pageId !== source.id))
         throw new Error('原页面版本不存在或不匹配，请刷新后重试')
       const now = Date.now()
       const id = nanoid()
-      const version: PageVersion | undefined = current ? {
-        id: nanoid(), pageId: id, versionNumber: 1, html: current.html,
-        source: 'copy', feedbackText: `复制自「${source.spec.name}」`, createdAt: now,
-      } : undefined
+      const version: PageVersion | undefined = current
+        ? {
+            id: nanoid(),
+            pageId: id,
+            versionNumber: 1,
+            html: current.html,
+            source: 'copy',
+            feedbackText: `复制自「${source.spec.name}」`,
+            createdAt: now,
+          }
+        : undefined
       const copy: Page = {
         id,
         projectId,
@@ -167,6 +250,7 @@ export const pageRepo = {
         sortOrder: 0,
         genStatus: version ? 'done' : 'idle',
         currentVersionId: version?.id,
+        reviewPending: false,
         updatedAt: now,
       }
       const existing = await pageRepo.listByProject(projectId)
@@ -179,7 +263,9 @@ export const pageRepo = {
       }
       await db.projects.update(projectId, {
         updatedAt: now,
-        ...(project.analysis ? { analysis: { ...project.analysis, pages: ordered.map((item) => item.spec) } } : {}),
+        ...(project.analysis
+          ? { analysis: { ...project.analysis, pages: ordered.map((item) => item.spec) } }
+          : {}),
       })
       return { page, pages: ordered, version, updatedAt: now }
     })
@@ -298,6 +384,7 @@ export const versionRepo = {
     html: string,
     feedbackText: string,
     submissionId?: string,
+    source: 'layrr' | 'ai-local' = 'layrr',
   ): Promise<PageVersion> {
     const note = feedbackText?.trim()
     if (!note || note.length > 500) throw new Error('请输入 1–500 字的版本修改备注')
@@ -308,7 +395,12 @@ export const versionRepo = {
       const versionId = submissionId ? 'layrr-' + submissionId : undefined
       const imported = versionId ? await db.pageVersions.get(versionId) : undefined
       if (imported) {
-        if (imported.pageId !== pageId || imported.html !== html || imported.feedbackText !== note)
+        if (
+          imported.pageId !== pageId ||
+          imported.html !== html ||
+          imported.feedbackText !== note ||
+          imported.source !== source
+        )
           throw new Error('提交信息与已保存版本不一致')
         return imported
       }
@@ -319,7 +411,7 @@ export const versionRepo = {
       const original = await db.pageVersions.get(baseline)
       if (!original || original.pageId !== pageId) throw new Error('原始版本不匹配')
       if (!html.trim() || original.html === html) throw new Error('没有需要保存的修改')
-      return versionRepo.add(pageId, html, 'layrr', note, versionId)
+      return versionRepo.add(pageId, html, source, note, versionId)
     })
   },
   async listByPage(pageId: string): Promise<PageVersion[]> {
@@ -355,6 +447,7 @@ export const versionRepo = {
         currentVersionId: version.id,
         genStatus: 'done',
         errorMessage: undefined,
+        reviewPending: ['generate', 'refine', 'ai-local'].includes(source),
         updatedAt: Date.now(),
       })
       if (existing.length + 1 > MAX_VERSIONS_PER_PAGE) {

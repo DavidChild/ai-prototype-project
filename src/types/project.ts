@@ -1,5 +1,6 @@
 import type { RequirementAnalysis } from './analysis'
 import type { ModelSelection } from './provider'
+import type { GenerationConstraint } from './generationConstraint'
 
 export type Platform = 'pc' | 'mobile'
 
@@ -49,6 +50,7 @@ export interface Project {
   hidden?: boolean
   platform: Platform
   styleSpec: StyleSpec
+  generationConstraints?: GenerationConstraint[]
   analysis?: RequirementAnalysis
   modelOverride?: Partial<ModelSelection>
   createdAt: number

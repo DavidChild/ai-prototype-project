@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useSettingsStore } from '@/stores/settings'
 import { normalizeImage } from '@/services/parsing/imageOps'
 import { imageToHtml } from '@/services/generation/imageToHtml'
-import { useMessage } from 'naive-ui'
+import { useDialog, useMessage } from 'naive-ui'
 import type { Page, PageGenStatus } from '@/types/page'
 import { useWorkbenchStore } from '@/stores/workbench'
 import {
@@ -17,6 +17,7 @@ defineProps<{ statusMeta: Record<PageGenStatus, { label: string; color: string }
 const emit = defineEmits<{ add: [parentId: string]; remove: [page: Page] }>()
 const wb = useWorkbenchStore()
 const message = useMessage()
+const dialog = useDialog()
 const importShow = ref(false)
 const importTarget = ref<{ projectId: string; pageId: string; name: string } | null>(null)
 const importHtml = ref('')
@@ -163,7 +164,7 @@ async function confirmImport() {
       throw new Error('请输入包含页面内容的 HTML')
     await wb.importPageHtml(target.projectId, target.pageId, html)
     importShow.value = false
-    message.success('HTML 已导入，当前页面已初始化，可继续局部编辑')
+    message.success('HTML 已导入，当前页面已初始化，可继续手动局部编辑')
   } catch (error) {
     message.error(error instanceof Error ? error.message : '导入失败')
   } finally {
@@ -183,10 +184,15 @@ const copyShow = ref(false)
 const copyTarget = ref<{ projectId: string; pageId: string } | null>(null)
 const copyName = ref('')
 const copySaving = ref(false)
-watch(() => wb.project?.id, () => {
-  copyShow.value = false
-  copyTarget.value = null
-})
+const exportSelectionMode = ref(false)
+watch(
+  () => wb.project?.id,
+  () => {
+    copyShow.value = false
+    copyTarget.value = null
+    exportSelectionMode.value = false
+  },
+)
 function openCopy(page: Page) {
   if (copySaving.value || wb.hierarchySaving || wb.loading) return
   copyTarget.value = { projectId: page.projectId, pageId: page.id }
@@ -229,7 +235,12 @@ async function confirmRename() {
   }
 }
 const collapsed = ref(new Set<string>())
-const searchQuery = ref('')
+const searchQuery = computed({
+  get: () => wb.pageSearchQuery,
+  set: (value: string) => {
+    wb.pageSearchQuery = value
+  },
+})
 const searching = computed(() => !!searchQuery.value.trim())
 const searchResult = computed(() => searchPageTreeRows(wb.pageRows, searchQuery.value))
 const branchIds = computed(
@@ -238,6 +249,51 @@ const branchIds = computed(
 const visibleRows = computed(() =>
   searching.value ? searchResult.value.rows : visiblePageTreeRows(wb.pageRows, collapsed.value),
 )
+const validExportSelection = computed(() =>
+  wb.exportSelectedPageIds.filter((id) => {
+    const page = wb.pages.find((item) => item.id === id)
+    return !!page && !page.spec.groupOnly && wb.htmlByPage.has(id)
+  }),
+)
+const exportSelectionSet = computed(() => new Set(validExportSelection.value))
+const selectionScope = computed(() =>
+  wb.pageRows
+    .map(({ page }) => page)
+    .filter(
+      (page) =>
+        !page.spec.groupOnly &&
+        wb.htmlByPage.has(page.id) &&
+        (!searching.value || searchResult.value.matchedIds.has(page.spec.id)),
+    ),
+)
+const wholeScopeSelected = computed(
+  () =>
+    !!selectionScope.value.length &&
+    selectionScope.value.every((page) => exportSelectionSet.value.has(page.id)),
+)
+function setExportSelected(pageId: string, checked: boolean) {
+  const next = new Set(validExportSelection.value)
+  if (checked) next.add(pageId)
+  else next.delete(pageId)
+  wb.exportSelectedPageIds = [...next]
+}
+function toggleSelectionScope() {
+  const scopeIds = new Set(selectionScope.value.map((page) => page.id))
+  const next = new Set(validExportSelection.value)
+  if (wholeScopeSelected.value) {
+    for (const id of scopeIds) next.delete(id)
+  } else {
+    for (const id of scopeIds) next.add(id)
+  }
+  wb.exportSelectedPageIds = [...next]
+}
+function clearExportSelection() {
+  wb.exportSelectedPageIds = []
+}
+function setExportSelectionMode(enabled: boolean) {
+  exportSelectionMode.value = enabled
+  if (!enabled) clearExportSelection()
+}
 watch(
   () => wb.project?.id,
   (id) => {
@@ -316,7 +372,7 @@ function resetDrag() {
   over.value = null
 }
 function startDrag(event: DragEvent, page: Page) {
-  if (wb.hierarchySaving || (event.target as Element).closest('button')) {
+  if (wb.hierarchySaving || (event.target as Element).closest('button, .n-checkbox')) {
     event.preventDefault()
     return
   }
@@ -380,17 +436,49 @@ async function reorder(page: Page, direction: number) {
   const target = siblings[index + direction]?.page
   if (target) await move(page.id, target.id, direction < 0 ? 'before' : 'after')
 }
+async function confirmReview(page: Page) {
+  try {
+    await wb.confirmPageReview(page.id)
+    message.success(`已确认「${page.spec.name}」的变更审阅`)
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '确认审阅失败，请重试')
+  }
+}
+function requestGenerate(page: Page) {
+  if (!wb.htmlByPage.has(page.id)) {
+    wb.generatePages([page.id])
+    return
+  }
+  dialog.warning({
+    title: '确认重新生成',
+    content: '重新生成会覆盖当前页面现有的 AI 原型内容，但不会删除页面配置和历史版本。是否继续？',
+    positiveText: '继续生成',
+    negativeText: '取消',
+    onPositiveClick: () => wb.generatePages([page.id]),
+  })
+}
 function handlePageAction(page: Page, key: string) {
   switch (key) {
-    case 'rename': return openRename(page)
-    case 'copy': return openCopy(page)
-    case 'remove': return emit('remove', page)
-    case 'image-html': return openImport(page, true)
-    case 'import': return openImport(page)
-    case 'parent': return openMove(page)
-    case 'add': return emit('add', page.spec.id)
-    case 'up': return reorder(page, -1)
-    case 'down': return reorder(page, 1)
+    case 'rename':
+      return openRename(page)
+    case 'copy':
+      return openCopy(page)
+    case 'remove':
+      return emit('remove', page)
+    case 'image-html':
+      return openImport(page, true)
+    case 'import':
+      return openImport(page)
+    case 'parent':
+      return openMove(page)
+    case 'add':
+      return emit('add', page.spec.id)
+    case 'up':
+      return reorder(page, -1)
+    case 'down':
+      return reorder(page, 1)
+    case 'confirm-review':
+      return confirmReview(page)
   }
 }
 </script>
@@ -410,6 +498,34 @@ function handlePageAction(page: Page, key: string) {
     </div>
   </div>
   <div class="tree-hint">拖动调整 · 上下边缘排序 · 中间移入（含全部下级）</div>
+  <div class="export-selection-mode">
+    <n-switch
+      :value="exportSelectionMode"
+      size="small"
+      aria-label="开启导出页面多选"
+      @update:value="setExportSelectionMode"
+    />
+    <span>导出选中</span>
+    <span v-if="exportSelectionMode" class="selection-count">
+      已选 {{ validExportSelection.length }} 页
+    </span>
+  </div>
+  <div v-if="exportSelectionMode" class="export-selection-controls">
+    <button type="button" :disabled="!selectionScope.length" @click="toggleSelectionScope">
+      {{
+        wholeScopeSelected
+          ? searching
+            ? '取消搜索结果'
+            : '取消全部'
+          : searching
+            ? '全选搜索结果'
+            : '全选全部页面'
+      }}
+    </button>
+    <button type="button" :disabled="!validExportSelection.length" @click="clearExportSelection">
+      清空
+    </button>
+  </div>
   <div v-if="branchIds.size && !searching" class="tree-controls">
     <button type="button" @click="collapsed = new Set()">全部展开</button>
     <button type="button" @click="collapseAll">全部折叠</button>
@@ -459,6 +575,18 @@ function handlePageAction(page: Page, key: string) {
         {{ !searching && collapsed.has(page.spec.id) ? '▸' : '▾' }}
       </button>
       <span v-else class="branch-spacer" />
+      <n-checkbox
+        v-if="exportSelectionMode && !page.spec.groupOnly"
+        class="export-check"
+        size="small"
+        :checked="exportSelectionSet.has(page.id)"
+        :disabled="!wb.htmlByPage.has(page.id)"
+        :aria-label="`${exportSelectionSet.has(page.id) ? '取消选择' : '选择'}${page.spec.name}用于导出`"
+        :title="wb.htmlByPage.has(page.id) ? '勾选用于批量导出' : '页面尚无可导出内容'"
+        @click.stop
+        @update:checked="(checked: boolean) => setExportSelected(page.id, checked)"
+      />
+      <span v-else-if="exportSelectionMode" class="export-check-spacer" />
       <n-spin v-if="page.genStatus === 'generating' && !page.spec.groupOnly" :size="10" />
       <span
         v-else
@@ -472,19 +600,26 @@ function handlePageAction(page: Page, key: string) {
       />
       <span
         class="page-name"
-        :class="{ 'search-match': searching && searchResult.matchedIds.has(page.spec.id) }"
-        :title="page.spec.name"
+        :class="{
+          'search-match': searching && searchResult.matchedIds.has(page.spec.id),
+          'review-pending': page.reviewPending,
+        }"
+        :title="page.reviewPending ? `${page.spec.name}（AI 变更待审阅）` : page.spec.name"
         >{{ page.spec.name }}</span
       >
       <span class="item-actions" @click.stop>
         <n-dropdown
           trigger="click"
           :options="[
+            ...(page.reviewPending ? [{ label: '确认变更审阅', key: 'confirm-review' }] : []),
             { label: '重命名', key: 'rename' },
             {
               label: '复制页面',
               key: 'copy',
-              disabled: !!page.spec.groupOnly || wb.loading || wb.refining ||
+              disabled:
+                !!page.spec.groupOnly ||
+                wb.loading ||
+                wb.refining ||
                 ['queued', 'generating'].includes(page.genStatus),
             },
             { label: '删除页面', key: 'remove' },
@@ -521,7 +656,7 @@ function handlePageAction(page: Page, key: string) {
           quaternary
           title="重新生成"
           :disabled="page.genStatus === 'generating' || page.genStatus === 'queued'"
-          @click="wb.generatePages([page.id])"
+          @click="requestGenerate(page)"
           >↻</n-button
         >
         <n-button
@@ -748,6 +883,41 @@ function handlePageAction(page: Page, key: string) {
   font-size: 11px;
   color: var(--qp-text-faint);
 }
+.export-selection-mode {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px 7px;
+  font-size: 11px;
+  color: var(--qp-text-muted);
+}
+.selection-count {
+  margin-right: auto;
+  margin-left: 2px;
+  white-space: nowrap;
+}
+.export-selection-controls {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 0 14px 7px;
+  font-size: 11px;
+}
+.export-selection-controls button {
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--qp-text-faint);
+  cursor: pointer;
+  font: inherit;
+}
+.export-selection-controls button:hover:not(:disabled) {
+  color: #818cf8;
+}
+.export-selection-controls button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 .page-tree {
   padding: 0 8px 8px;
 }
@@ -773,6 +943,11 @@ function handlePageAction(page: Page, key: string) {
 .branch-spacer {
   width: 14px;
   flex: 0 0 14px;
+}
+.export-check,
+.export-check-spacer {
+  width: 16px;
+  flex: 0 0 16px;
 }
 .branch-toggle {
   padding: 0;
@@ -845,6 +1020,10 @@ function handlePageAction(page: Page, key: string) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.page-name.review-pending {
+  color: #f59e0b;
+  font-weight: 600;
 }
 .item-actions {
   display: none;

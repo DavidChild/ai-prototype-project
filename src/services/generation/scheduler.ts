@@ -2,33 +2,33 @@ import type { Page } from '@/types/page'
 import { createLimiter, withRetry, type Limiter } from '@/utils/concurrency'
 import { isRetryable, LLMError } from '../llm/errors'
 
-export interface SchedulerCallbacks {
+export interface SchedulerCallbacks<TResult> {
   /** 状态流转；error 为「已取消」时由调用方决定回退状态 */
   onStatus: (pageId: string, status: 'queued' | 'generating' | 'failed', error?: string) => void
   onDelta: (pageId: string, text: string) => void
   onReasoningDelta: (pageId: string, text: string) => void
   /** 生成成功，html 已 normalize；由调用方负责落库 */
-  onSuccess: (pageId: string, html: string) => Promise<void>
+  onSuccess: (pageId: string, result: TResult) => Promise<void>
 }
 
-export interface SchedulerOptions {
+export interface SchedulerOptions<TResult> {
   concurrency: () => number
   generate: (
     page: Page,
     signal: AbortSignal,
     onDelta: (t: string) => void,
     onReasoningDelta: (t: string) => void,
-  ) => Promise<string>
-  callbacks: SchedulerCallbacks
+  ) => Promise<TResult>
+  callbacks: SchedulerCallbacks<TResult>
 }
 
 /** 批量页面生成调度：限流、重试、限流降级、单页/全局中止 */
-export class GenerationScheduler {
+export class GenerationScheduler<TResult> {
   private limiter: Limiter
   private controllers = new Map<string, AbortController>()
   private rateLimited = false
 
-  constructor(private opts: SchedulerOptions) {
+  constructor(private opts: SchedulerOptions<TResult>) {
     this.limiter = createLimiter(opts.concurrency())
   }
 

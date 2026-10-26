@@ -10,6 +10,7 @@ const SOURCE_LABEL: Record<PageVersion['source'], string> = {
   refine: '微调',
   rollback: '回退',
   layrr: '手动局部编辑',
+  'ai-local': 'AI 局部编辑',
   import: '导入 HTML',
   copy: '复制页面',
 }
@@ -45,10 +46,11 @@ const SOURCE_LABEL: Record<PageVersion['source'], string> = {
             <div style="flex: 1" />
             <n-popconfirm
               v-if="v.id !== wb.selectedPage?.currentVersionId"
+              :disabled="wb.localEditingPageId === v.pageId"
               @positive-click="wb.rollbackTo(v)"
             >
               <template #trigger>
-                <n-button size="tiny" quaternary type="primary">回退到此版</n-button>
+                <n-button size="tiny" quaternary type="primary" :disabled="wb.localEditingPageId === v.pageId">回退到此版</n-button>
               </template>
               以 v{{ v.versionNumber }} 的内容创建新版本？
             </n-popconfirm>

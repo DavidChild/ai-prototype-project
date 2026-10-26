@@ -10,10 +10,19 @@ export interface Page {
   genStatus: PageGenStatus
   errorMessage?: string
   currentVersionId?: string
+  /** AI-produced version has not yet been acknowledged from the page menu. */
+  reviewPending?: boolean
   updatedAt: number
 }
 
-export type PageVersionSource = 'generate' | 'refine' | 'rollback' | 'layrr' | 'import' | 'copy'
+export type PageVersionSource =
+  | 'generate'
+  | 'refine'
+  | 'rollback'
+  | 'layrr'
+  | 'ai-local'
+  | 'import'
+  | 'copy'
 
 export interface PageVersion {
   id: string
