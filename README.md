@@ -1,10 +1,10 @@
-# 快页 QuickPage
+# 小豆原型
 
 **中文** | [English](./README.en.md)
 
-快页（QuickPage）是一款**纯前端**的高保真原型批量生成工具：上传需求文档（docx / pdf / xlsx / csv / md / txt / 图片），AI 自动理解需求并产出可编辑的页面清单，确认后批量并行生成**统一风格的高保真 HTML 原型**，支持对话式微调（可附参考图）、版本回退，导出 PNG / 自包含 HTML / 整项目 ZIP。
+小豆原型是一款本地运行的高保真原型批量生成工具：上传需求文档（docx / pdf / xlsx / csv / md / txt / 图片），AI 自动理解需求并产出可编辑的页面清单，确认后批量并行生成**统一风格的高保真 HTML 原型**，支持对话式微调（可附参考图）、版本回退，导出 PNG / 自包含 HTML / 整项目 ZIP。
 
-无后端：API Key 仅保存在本机浏览器 localStorage，项目数据存 IndexedDB，请求由浏览器直连服务商或经本地 Vite 代理转发。
+API Key 仅保存在本机浏览器 localStorage；项目、页面、版本、文档及图片资产通过本地 Vite 服务写入 MySQL。LLM 请求由浏览器直连服务商或经本地 Vite 代理转发。
 
 ## 快速开始
 
@@ -12,6 +12,16 @@
 npm install
 npm run dev
 ```
+
+启动前请创建空数据库并配置连接（默认数据库名 `db_proto`）：
+
+```sql
+CREATE DATABASE db_proto CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+```
+
+将 `.env.example` 复制为 `.env.local` 并填写 `MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_USER`、`MYSQL_PASSWORD`、`MYSQL_DATABASE`。应用启动时会自动创建 `projects`、`pages`、`page_versions`、`source_docs`、`assets` 五张表及索引、外键；无需手动执行建表 SQL。应用依赖本地存储 API，必须通过 `npm run dev` 或 `npm run preview` 运行，不能直接打开静态 HTML。
+
+如果升级前已有 IndexedDB 项目，首页在 MySQL 为空时会自动提示迁移；也可以进入「设置 → 数据管理 → 迁移浏览器旧数据」手动执行。迁移会保留项目、页面与版本 ID，并按项目事务写入；迁移成功后不会自动删除浏览器旧数据。必须使用原来保存数据的同一浏览器及同一访问地址打开应用。
 
 首次使用：进入「设置」→ 添加服务商（内置 OpenAI、Anthropic、OpenRouter、DeepSeek、硅基流动、Kimi、智谱、通义、魔搭、火山方舟、腾讯混元、百度千帆、MiniMax、GitHub Models、Google Gemini OpenAI 兼容、Groq、Mistral、Perplexity、Together、Fireworks、Cerebras、Hugging Face、LM Studio、Ollama、New API 等 20+ 预设，也支持自定义 OpenAI 兼容或 Anthropic 服务商）→ 填入 API Key →「测试连接 / 拉取模型」→ 分别选择「需求理解模型」与「页面生成模型」。服务商配置保存在本地，可随时编辑、删除；向导与工作台中可内联快速切换模型。
 
@@ -54,4 +64,4 @@ npm run dev
 
 ## 技术栈
 
-Vue 3 + TypeScript + Vite + Naive UI + Pinia + Dexie(IndexedDB)；文档解析：mammoth / pdfjs-dist / SheetJS；导出：html-to-image / JSZip。LLM 客户端为手写 fetch，支持 OpenAI 兼容与 Anthropic 两种协议的流式输出与多模态消息。
+Vue 3 + TypeScript + Vite + Naive UI + Pinia + MySQL/MariaDB；文档解析：mammoth / pdfjs-dist / SheetJS；导出：html-to-image / JSZip。LLM 客户端为手写 fetch，支持 OpenAI 兼容与 Anthropic 两种协议的流式输出与多模态消息。

@@ -1,516 +1,147 @@
 import { nanoid } from 'nanoid'
-import { db, type SourceDoc, type StoredAsset } from './db'
+import { storageRequest, type SourceDoc, type StoredAsset } from './db'
 import type { Project } from '@/types/project'
 import type { Page, PageVersion, PageVersionSource } from '@/types/page'
-import { movePageTree } from '@/utils/pageTree'
 import type { GenerationConstraint } from '@/types/generationConstraint'
 import { validateConstraint } from '@/prompts/generationConstraints'
 import { validateStore, type AnnotationStore } from 'web-remarq/core'
 
-const MAX_VERSIONS_PER_PAGE = 20
+function clone<T>(value: T): T {
+  // Vue reactive objects are JSON payloads, but cannot be structuredClone'd.
+  return JSON.parse(JSON.stringify(value)) as T
+}
+
+function patchPayload<T extends object>(patch: T) {
+  return { patch: clone(patch), unset: Object.keys(patch).filter((key) => patch[key as keyof T] === undefined) }
+}
 
 export const projectRepo = {
-  list(): Promise<Project[]> {
-    return db.projects.orderBy('updatedAt').reverse().toArray()
-  },
-
-  get(id: string): Promise<Project | undefined> {
-    return db.projects.get(id)
-  },
-
+  list: () => storageRequest<Project[]>('project.list'),
+  get: (id: string) => storageRequest<Project | undefined>('project.get', { id }),
   async create(project: Project): Promise<void> {
-    await db.projects.add({
-      ...project,
-      familyId: project.familyId ?? project.id,
-      iteration: project.iteration ?? 'v1.0',
-    })
+    await storageRequest('project.create', { project: clone(project) })
   },
-
   async copyIteration(sourceId: string, iteration: string): Promise<Project> {
     const label = iteration.trim()
     if (!label) throw new Error('请输入版本号')
-    return db.transaction(
-      'rw',
-      [db.projects, db.pages, db.pageVersions, db.sourceDocs, db.assets],
-      async () => {
-        const source = await db.projects.get(sourceId)
-        if (!source) throw new Error('来源版本不存在')
-        const familyId = source.familyId ?? source.id
-        const siblings = await db.projects.where('familyId').equals(familyId).toArray()
-        if (siblings.some((p) => p.iteration?.toLowerCase() === label.toLowerCase()))
-          throw new Error('该版本号已存在')
-        const now = Date.now()
-        const target: Project = {
-          ...source,
-          id: nanoid(),
-          familyId,
-          iteration: label,
-          basedOnId: source.id,
-          createdAt: now,
-          updatedAt: now,
-        }
-        const pages = await pageRepo.listByProject(sourceId)
-        if (pages.some((p) => p.genStatus === 'queued' || p.genStatus === 'generating'))
-          throw new Error('来源版本仍在生成，请先停止生成或等待完成')
-        const pageIds = new Map(pages.map((p) => [p.id, nanoid()]))
-        const remapConstraint = (item: GenerationConstraint): GenerationConstraint => ({
-          ...item,
-          sourcePageId: item.sourcePageId ? pageIds.get(item.sourcePageId) : undefined,
-        })
-        if (target.generationConstraints)
-          target.generationConstraints = target.generationConstraints.map(remapConstraint)
-        const versions = await db.pageVersions
-          .where('pageId')
-          .anyOf([...pageIds.keys()])
-          .toArray()
-        const versionIds = new Map(versions.map((v) => [v.id, nanoid()]))
-        const docs = await db.sourceDocs.where('projectId').equals(sourceId).toArray()
-        const docIds = new Map(docs.map((d) => [d.id, nanoid()]))
-        const assets = await db.assets.where('projectId').equals(sourceId).toArray()
-        await db.projects.add(target)
-        await db.pages.bulkAdd(
-          pages.map((p) => ({
-            ...p,
-            id: pageIds.get(p.id)!,
-            projectId: target.id,
-            spec: {
-              ...p.spec,
-              ...(p.spec.constraints
-                ? {
-                    constraints: {
-                      ...p.spec.constraints,
-                      items: p.spec.constraints.items.map(remapConstraint),
-                    },
-                  }
-                : {}),
-              ...(p.spec.importedPages
-                ? {
-                    importedPages: p.spec.importedPages
-                      .map((reference) => ({
-                        ...reference,
-                        pageId: pageIds.get(reference.pageId),
-                      }))
-                      .filter(
-                        (reference): reference is typeof reference & { pageId: string } =>
-                          !!reference.pageId,
-                      ),
-                  }
-                : {}),
-            },
-            currentVersionId: p.currentVersionId ? versionIds.get(p.currentVersionId) : undefined,
-            reviewPending: false,
-            updatedAt: now,
-          })),
-        )
-        await db.pageVersions.bulkAdd(
-          versions.map((v) => ({
-            ...v,
-            id: versionIds.get(v.id)!,
-            pageId: pageIds.get(v.pageId)!,
-          })),
-        )
-        await db.sourceDocs.bulkAdd(
-          docs.map((d) => ({ ...d, id: docIds.get(d.id)!, projectId: target.id })),
-        )
-        await db.assets.bulkAdd(
-          assets.map((a) => ({
-            ...a,
-            id: nanoid(),
-            projectId: target.id,
-            docId: docIds.get(a.docId) ?? a.docId,
-          })),
-        )
-        return target
-      },
-    )
+    return storageRequest<Project>('project.copyIteration', { sourceId, iteration: label })
   },
-
-  async updateFamily(familyId: string, patch: { name?: string; hidden?: boolean }): Promise<void> {
-    await db.projects.where('familyId').equals(familyId).modify(patch)
-  },
-
-  async removeFamily(familyId: string): Promise<void> {
-    await db.transaction(
-      'rw',
-      [db.projects, db.pages, db.pageVersions, db.sourceDocs, db.assets],
-      async () => {
-        const iterations = await db.projects.where('familyId').equals(familyId).primaryKeys()
-        for (const id of iterations) await projectRepo.removeCascade(id)
-      },
-    )
-  },
-
-  async update(id: string, patch: Partial<Omit<Project, 'id'>>): Promise<void> {
-    await db.projects.update(id, { ...patch, updatedAt: Date.now() })
-  },
-
-  async saveConstraint(
-    projectId: string,
-    item: GenerationConstraint,
-  ): Promise<GenerationConstraint[]> {
+  updateFamily: (familyId: string, patch: { name?: string; hidden?: boolean }) => storageRequest<void>('project.updateFamily', { familyId, patch }),
+  removeFamily: (familyId: string) => storageRequest<void>('project.removeFamily', { familyId }),
+  update: (id: string, patch: Partial<Omit<Project, 'id'>>) => storageRequest<void>('project.update', { id, ...patchPayload(patch) }),
+  async saveConstraint(projectId: string, item: GenerationConstraint): Promise<GenerationConstraint[]> {
     validateConstraint(item)
-    return db.transaction('rw', db.projects, async () => {
-      const project = await db.projects.get(projectId)
-      if (!project) throw new Error('项目不存在，请重新打开项目')
-      const items = [...(project.generationConstraints ?? [])]
-      if (
-        items.some(
-          (existing) => existing.id !== item.id && existing.name.trim() === item.name.trim(),
-        )
-      )
-        throw new Error('已存在同名全局约束，请使用其他名称')
-      const index = items.findIndex((existing) => existing.id === item.id)
-      const saved = { ...item, name: item.name.trim(), updatedAt: Date.now() }
-      if (index < 0) items.push(saved)
-      else items[index] = saved
-      await db.projects.update(projectId, {
-        generationConstraints: items,
-        updatedAt: saved.updatedAt,
-      })
-      return items
-    })
+    return storageRequest('project.saveConstraint', { projectId, item: clone(item) })
   },
-
-  async removeConstraint(projectId: string, id: string): Promise<GenerationConstraint[]> {
-    return db.transaction('rw', db.projects, async () => {
-      const project = await db.projects.get(projectId)
-      if (!project) throw new Error('项目不存在，请重新打开项目')
-      const items = (project.generationConstraints ?? []).filter((item) => item.id !== id)
-      await db.projects.update(projectId, { generationConstraints: items, updatedAt: Date.now() })
-      return items
-    })
-  },
-
-  /** 切换可见性不改变内容更新时间或项目排列顺序。 */
-  async setHidden(id: string, hidden: boolean): Promise<void> {
-    const updated = await db.projects.update(id, { hidden })
-    if (!updated) throw new Error('项目不存在，请刷新后重试')
-  },
-
-  /** 级联删除项目及其页面、版本、源文档、图片资产 */
-  async removeCascade(id: string): Promise<void> {
-    await db.transaction(
-      'rw',
-      [db.projects, db.pages, db.pageVersions, db.sourceDocs, db.assets],
-      async () => {
-        const pageIds = (await db.pages.where('projectId').equals(id).primaryKeys()) as string[]
-        await db.pageVersions.where('pageId').anyOf(pageIds).delete()
-        await db.pages.where('projectId').equals(id).delete()
-        await db.sourceDocs.where('projectId').equals(id).delete()
-        await db.assets.where('projectId').equals(id).delete()
-        await db.projects.delete(id)
-      },
-    )
-  },
+  removeConstraint: (projectId: string, id: string) => storageRequest<GenerationConstraint[]>('project.removeConstraint', { projectId, id }),
+  setHidden: (id: string, hidden: boolean) => storageRequest<void>('project.setHidden', { id, hidden }),
+  removeCascade: (id: string) => storageRequest<void>('project.removeCascade', { id }),
 }
 
 export const pageRepo = {
-  /** Copy only this page and its current saved content, with independent IDs and history. */
-  async copy(
-    projectId: string,
-    pageId: string,
-    name: string,
-  ): Promise<{
-    page: Page
-    pages: Page[]
-    version?: PageVersion
-    updatedAt: number
-  }> {
+  async copy(projectId: string, pageId: string, name: string): Promise<{ page: Page; pages: Page[]; version?: PageVersion; updatedAt: number }> {
     const trimmed = name.trim()
     if (!trimmed) throw new Error('页面名不能为空')
-    return db.transaction('rw', [db.pages, db.pageVersions, db.projects], async () => {
-      const project = await db.projects.get(projectId)
-      if (!project) throw new Error('项目不存在，请刷新后重试')
-      const source = await db.pages.get(pageId)
-      if (!source || source.projectId !== projectId) throw new Error('原页面不存在或不属于当前项目')
-      if (source.spec.groupOnly) throw new Error('请选择普通页面进行复制')
-      if (source.genStatus === 'queued' || source.genStatus === 'generating')
-        throw new Error('原页面正在生成或排队，请停止后再复制')
-      const current = source.currentVersionId
-        ? await db.pageVersions.get(source.currentVersionId)
-        : undefined
-      if (source.currentVersionId && (!current || current.pageId !== source.id))
-        throw new Error('原页面版本不存在或不匹配，请刷新后重试')
-      const now = Date.now()
-      const id = nanoid()
-      const version: PageVersion | undefined = current
-        ? {
-            id: nanoid(),
-            pageId: id,
-            versionNumber: 1,
-            html: current.html,
-            source: 'copy',
-            feedbackText: `复制自「${source.spec.name}」`,
-            createdAt: now,
-          }
-        : undefined
-      const copy: Page = {
-        id,
-        projectId,
-        spec: { ...source.spec, id, name: trimmed, blocks: [...source.spec.blocks] },
-        sortOrder: 0,
-        genStatus: version ? 'done' : 'idle',
-        currentVersionId: version?.id,
-        reviewPending: false,
-        updatedAt: now,
-      }
-      const existing = await pageRepo.listByProject(projectId)
-      const ordered = movePageTree([...existing, copy], id, source.id, 'after')
-      const page = ordered.find((item) => item.id === id)!
-      await db.pages.add(page)
-      if (version) await db.pageVersions.add(version)
-      for (const item of ordered) {
-        if (item.id !== id) await db.pages.update(item.id, { sortOrder: item.sortOrder })
-      }
-      await db.projects.update(projectId, {
-        updatedAt: now,
-        ...(project.analysis
-          ? { analysis: { ...project.analysis, pages: ordered.map((item) => item.spec) } }
-          : {}),
-      })
-      return { page, pages: ordered, version, updatedAt: now }
-    })
+    return storageRequest('page.copy', { projectId, pageId, name: trimmed })
   },
-
-  /** 只更新名称，不覆盖层级、生成状态或版本引用。 */
   async rename(id: string, name: string): Promise<void> {
-    const trimmed = name.trim()
-    if (!trimmed) throw new Error('页面名不能为空')
-    await db.transaction('rw', [db.pages, db.projects], async () => {
-      const page = await db.pages.get(id)
-      if (!page) throw new Error('页面不存在，请刷新后重试')
-      const now = Date.now()
-      await db.pages.update(id, { 'spec.name': trimmed, updatedAt: now })
-      const project = await db.projects.get(page.projectId)
-      if (project) {
-        await db.projects.update(project.id, {
-          updatedAt: now,
-          ...(project.analysis
-            ? {
-                analysis: {
-                  ...project.analysis,
-                  pages: project.analysis.pages.map((spec) =>
-                    spec.id === page.spec.id ? { ...spec, name: trimmed } : spec,
-                  ),
-                },
-              }
-            : {}),
-        })
-      }
-    })
+    const trimmed = name.trim(); if (!trimmed) throw new Error('页面名不能为空')
+    await storageRequest('page.rename', { id, name: trimmed })
   },
-
-  listByProject(projectId: string): Promise<Page[]> {
-    return db.pages.where('projectId').equals(projectId).sortBy('sortOrder')
-  },
-
-  get(id: string): Promise<Page | undefined> {
-    return db.pages.get(id)
-  },
-
-  async bulkCreate(pages: Page[]): Promise<void> {
-    await db.pages.bulkAdd(pages)
-  },
-
-  async create(page: Page): Promise<void> {
-    await db.pages.add(page)
-  },
-
-  /** Patch only hierarchy fields so a simultaneous generation cannot lose its version/status. */
-  async saveHierarchy(projectId: string, pages: Page[]): Promise<void> {
-    await db.transaction('rw', [db.pages, db.projects], async () => {
-      const now = Date.now()
-      for (const page of pages) {
-        const existing = await db.pages.get(page.id)
-        if (!existing || existing.projectId !== projectId)
-          throw new Error('页面已变更，请刷新后重试')
-        await db.pages.update(page.id, {
-          spec: page.spec,
-          sortOrder: page.sortOrder,
-          updatedAt: now,
-        })
-      }
-      const project = await db.projects.get(projectId)
-      if (!project) throw new Error('项目不存在')
-      await db.projects.update(projectId, {
-        updatedAt: now,
-        ...(project.analysis
-          ? { analysis: { ...project.analysis, pages: pages.map((page) => page.spec) } }
-          : {}),
-      })
-    })
-  },
-
-  async update(id: string, patch: Partial<Omit<Page, 'id'>>): Promise<void> {
-    await db.pages.update(id, { ...patch, updatedAt: Date.now() })
-  },
-
+  listByProject: (projectId: string) => storageRequest<Page[]>('page.listByProject', { projectId }),
+  get: (id: string) => storageRequest<Page | undefined>('page.get', { id }),
+  bulkCreate: (pages: Page[]) => storageRequest<void>('page.bulkCreate', { pages: clone(pages) }),
+  create: (page: Page) => storageRequest<void>('page.create', { page: clone(page) }),
+  saveHierarchy: (projectId: string, pages: Page[]) => storageRequest<void>('page.saveHierarchy', { projectId, pages: clone(pages) }),
+  update: (id: string, patch: Partial<Omit<Page, 'id'>>) => storageRequest<void>('page.update', { id, ...patchPayload(patch) }),
   async saveAnnotationStore(id: string, input: AnnotationStore): Promise<AnnotationStore> {
     const result = validateStore(input)
     if (!result.ok) throw new Error(`标注数据无效：${result.errors[0] ?? '格式错误'}`)
-    const page = await db.pages.get(id)
-    if (!page) throw new Error('页面不存在，请刷新后重试')
-    const store = structuredClone(result.store)
-    await db.pages.update(id, { annotationStore: store })
-    return store
+    return storageRequest('page.saveAnnotationStore', { id, store: clone(result.store) })
   },
-
-  async remove(id: string): Promise<void> {
-    await db.transaction('rw', [db.pages, db.pageVersions], async () => {
-      await db.pageVersions.where('pageId').equals(id).delete()
-      await db.pages.delete(id)
-    })
-  },
-
-  /** 刷新/崩溃后残留的 generating/queued 状态重置为 failed */
-  async resetStale(projectId: string): Promise<void> {
-    await db.pages
-      .where('projectId')
-      .equals(projectId)
-      .filter((p) => p.genStatus === 'generating' || p.genStatus === 'queued')
-      .modify({ genStatus: 'failed', errorMessage: '生成被中断，可重试' })
-  },
+  remove: (id: string) => storageRequest<void>('page.remove', { id }),
+  resetStale: (projectId: string) => storageRequest<void>('page.resetStale', { projectId }),
 }
 
 export const versionRepo = {
   async initializeHtml(projectId: string, pageId: string, html: string): Promise<PageVersion> {
     if (!html.trim()) throw new Error('HTML 内容不能为空')
-    if (new TextEncoder().encode(html).length > 5 * 1024 * 1024)
-      throw new Error('HTML 文件不能超过 5 MB')
-    return db.transaction('rw', [db.pages, db.pageVersions], async () => {
-      const page = await db.pages.get(pageId)
-      if (!page || page.projectId !== projectId) throw new Error('页面不存在或不属于当前迭代')
-      if (page.spec.groupOnly) throw new Error('导航分组不能导入 HTML，请先改为普通页面')
-      if (page.genStatus === 'queued' || page.genStatus === 'generating')
-        throw new Error('页面正在生成或排队，请先停止')
-      if (page.currentVersionId || (await db.pageVersions.where('pageId').equals(pageId).count()))
-        throw new Error('页面已有内容，不能通过初始化导入覆盖')
-      return versionRepo.add(pageId, html, 'import', '手动导入 HTML 初始化页面')
-    })
+    if (new TextEncoder().encode(html).length > 5 * 1024 * 1024) throw new Error('HTML 文件不能超过 5 MB')
+    return storageRequest('version.initializeHtml', { projectId, pageId, html, source: 'import', feedbackText: '手动导入 HTML 初始化页面', versionId: nanoid() })
   },
-  async importLayrr(
-    projectId: string,
-    pageId: string,
-    baseline: string,
-    html: string,
-    feedbackText: string,
-    submissionId?: string,
-    source: 'layrr' | 'ai-local' = 'layrr',
-  ): Promise<PageVersion> {
-    const note = feedbackText?.trim()
-    if (!note || note.length > 500) throw new Error('请输入 1–500 字的版本修改备注')
-    return db.transaction('rw', [db.pages, db.pageVersions], async () => {
-      const page = await db.pages.get(pageId)
-      if (!page || page.projectId !== projectId || page.spec.groupOnly)
-        throw new Error('原页面已删除或不属于此迭代')
-      const versionId = submissionId ? 'layrr-' + submissionId : undefined
-      const imported = versionId ? await db.pageVersions.get(versionId) : undefined
-      if (imported) {
-        if (
-          imported.pageId !== pageId ||
-          imported.html !== html ||
-          imported.feedbackText !== note ||
-          imported.source !== source
-        )
-          throw new Error('提交信息与已保存版本不一致')
-        return imported
-      }
-      if (page.currentVersionId !== baseline)
-        throw new Error('页面已产生新版本，请重新打开 Layrr，避免覆盖其他修改')
-      if (page.genStatus === 'queued' || page.genStatus === 'generating')
-        throw new Error('页面仍在生成，请停止后再保存')
-      const original = await db.pageVersions.get(baseline)
-      if (!original || original.pageId !== pageId) throw new Error('原始版本不匹配')
-      if (!html.trim() || original.html === html) throw new Error('没有需要保存的修改')
-      return versionRepo.add(pageId, html, source, note, versionId)
-    })
+  async importLayrr(projectId: string, pageId: string, baseline: string, html: string, feedbackText: string, submissionId?: string, source: 'layrr' | 'ai-local' = 'layrr'): Promise<PageVersion> {
+    const note = feedbackText?.trim(); if (!note || note.length > 500) throw new Error('请输入 1–500 字的版本修改备注')
+    return storageRequest('version.importLayrr', { projectId, pageId, baseline, html, feedbackText: note, source, versionId: submissionId ? 'layrr-' + submissionId : nanoid() })
   },
-  async listByPage(pageId: string): Promise<PageVersion[]> {
-    const versions = await db.pageVersions.where('pageId').equals(pageId).sortBy('versionNumber')
-    return versions.reverse()
-  },
+  listByPage: (pageId: string) => storageRequest<PageVersion[]>('version.listByPage', { pageId }),
+  get: (id: string) => storageRequest<PageVersion | undefined>('version.get', { id }),
+  add: (pageId: string, html: string, source: PageVersionSource, feedbackText?: string, versionId?: string) => storageRequest<PageVersion>('version.add', { pageId, html, source, feedbackText, versionId: versionId ?? nanoid() }),
+}
 
-  get(id: string): Promise<PageVersion | undefined> {
-    return db.pageVersions.get(id)
-  },
+async function assetPayload(asset: StoredAsset) {
+  const bytes = new Uint8Array(await asset.blob.arrayBuffer())
+  let binary = ''
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
+  return { ...asset, blob: undefined, blobBase64: btoa(binary) }
+}
 
-  /** 新增版本：写版本、置为当前版本、裁剪历史 */
-  async add(
-    pageId: string,
-    html: string,
-    source: PageVersionSource,
-    feedbackText?: string,
-    versionId?: string,
-  ): Promise<PageVersion> {
-    return db.transaction('rw', [db.pages, db.pageVersions], async () => {
-      const existing = await db.pageVersions.where('pageId').equals(pageId).sortBy('versionNumber')
-      const version: PageVersion = {
-        id: versionId ?? nanoid(),
-        pageId,
-        versionNumber: (existing.at(-1)?.versionNumber ?? 0) + 1,
-        html,
-        source,
-        feedbackText,
-        createdAt: Date.now(),
-      }
-      await db.pageVersions.add(version)
-      await db.pages.update(pageId, {
-        currentVersionId: version.id,
-        genStatus: 'done',
-        errorMessage: undefined,
-        reviewPending: ['generate', 'refine', 'ai-local'].includes(source),
-        updatedAt: Date.now(),
-      })
-      if (existing.length + 1 > MAX_VERSIONS_PER_PAGE) {
-        const surplus = existing.slice(0, existing.length + 1 - MAX_VERSIONS_PER_PAGE)
-        await db.pageVersions.bulkDelete(surplus.map((v) => v.id))
-      }
-      return version
-    })
-  },
+export async function createProjectBundle(
+  project: Project,
+  pages: Page[],
+  docs: SourceDoc[],
+  assets: StoredAsset[],
+): Promise<void> {
+  await storageRequest('project.createBundle', {
+    project: clone(project),
+    pages: clone(pages),
+    docs: clone(docs),
+    assets: await Promise.all(assets.map(assetPayload)),
+  })
+}
+
+export async function saveImportedProjectBundle(
+  project: Project,
+  pages: Page[],
+  versions: PageVersion[],
+  docs: SourceDoc[],
+  assets: StoredAsset[],
+  targetProjectId?: string,
+): Promise<string> {
+  const result = await storageRequest<{ projectId: string }>('project.importBundle', {
+    targetProjectId,
+    project: clone(project),
+    pages: clone(pages),
+    versions: clone(versions),
+    docs: clone(docs),
+    assets: await Promise.all(assets.map(assetPayload)),
+  })
+  return result.projectId
 }
 
 export const docRepo = {
-  async bulkCreate(docs: SourceDoc[]): Promise<void> {
-    await db.sourceDocs.bulkAdd(docs)
-  },
-
-  listByProject(projectId: string): Promise<SourceDoc[]> {
-    return db.sourceDocs.where('projectId').equals(projectId).toArray()
-  },
+  bulkCreate: (docs: SourceDoc[]) => storageRequest<void>('doc.bulkCreate', { docs: clone(docs) }),
+  listByProject: (projectId: string) => storageRequest<SourceDoc[]>('doc.listByProject', { projectId }),
 }
 
 export const assetRepo = {
   async bulkCreate(assets: StoredAsset[]): Promise<void> {
-    await db.assets.bulkAdd(assets)
+    await storageRequest('asset.bulkCreate', { assets: await Promise.all(assets.map(assetPayload)) })
   },
-
-  listByProject(projectId: string): Promise<StoredAsset[]> {
-    return db.assets.where('projectId').equals(projectId).toArray()
+  async listByProject(projectId: string): Promise<StoredAsset[]> {
+    const assets = await storageRequest<(Omit<StoredAsset, 'blob'> & { blobBase64: string })[]>('asset.listByProject', { projectId })
+    return assets.map(({ blobBase64, ...asset }) => {
+      const binary = atob(blobBase64), bytes = new Uint8Array(binary.length)
+      for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index)
+      return { ...asset, blob: new Blob([bytes], { type: asset.mimeType }) }
+    })
   },
 }
 
-/** 工作台一次性读取：项目 + 页面 + 当前版本 HTML */
-export async function loadWorkbench(projectId: string): Promise<{
-  project: Project
-  pages: Page[]
-  htmlByPage: Map<string, string>
-} | null> {
-  const project = await db.projects.get(projectId)
-  if (!project) return null
-  await pageRepo.resetStale(projectId)
-  const pages = await pageRepo.listByProject(projectId)
-  const versionIds = pages.map((p) => p.currentVersionId).filter((v): v is string => !!v)
-  const versions = await db.pageVersions.bulkGet(versionIds)
-  const htmlByPage = new Map<string, string>()
-  for (const v of versions) {
-    if (v) htmlByPage.set(v.pageId, v.html)
-  }
-  return { project, pages, htmlByPage }
+export async function loadWorkbench(projectId: string): Promise<{ project: Project; pages: Page[]; htmlByPage: Map<string, string> } | null> {
+  const result = await storageRequest<{ project: Project; pages: Page[]; htmlByPage: Record<string, string> } | null>('workbench.load', { projectId })
+  return result ? { ...result, htmlByPage: new Map(Object.entries(result.htmlByPage)) } : null
 }
 
-export async function estimateUsage(): Promise<{ usage: number; quota: number } | null> {
-  if (!navigator.storage?.estimate) return null
-  const { usage = 0, quota = 0 } = await navigator.storage.estimate()
-  return { usage, quota }
+export function estimateUsage(): Promise<{ usage: number; quota: number } | null> {
+  return storageRequest('usage')
 }

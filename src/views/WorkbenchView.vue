@@ -16,12 +16,17 @@ import VersionList from '@/components/workbench/VersionList.vue'
 import PageInfoForm from '@/components/workbench/PageInfoForm.vue'
 import GlobalConstraints from '@/components/workbench/GlobalConstraints.vue'
 import ExportMenu from '@/components/workbench/ExportMenu.vue'
+import ShareMenu from '@/components/workbench/ShareMenu.vue'
 import ModelSelect from '@/components/settings/ModelSelect.vue'
+import { useAuthStore } from '@/stores/auth'
+import AccountSettingsDialog from '@/components/account/AccountSettingsDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
 const wb = useWorkbenchStore()
 const settings = useSettingsStore()
+const auth = useAuthStore()
+const accountSettingsShow = ref(false)
 const iterationSelection = useIterationSelectionStore()
 const iterationOptions = ref<{ label: string; value: string }[]>([])
 const showGlobalConstraints = ref(false)
@@ -99,6 +104,7 @@ watch(
         <span class="style-dot" :style="{ background: wb.project.styleSpec.tokens.primaryColor }" />
       </n-tag>
       <n-button
+        v-if="auth.canEdit"
         size="small"
         secondary
         :disabled="!wb.project || wb.loading || !!wb.loadError"
@@ -108,11 +114,12 @@ watch(
         全局约束
       </n-button>
       <div style="flex: 1" />
-      <div class="topbar-model">
+      <div v-if="auth.canEdit" class="topbar-model">
         <n-text depth="3" style="font-size: 12px; flex-shrink: 0">生成模型</n-text>
         <ModelSelect v-model="settings.modelSelection.generation" size="tiny" style="flex: 1" />
       </div>
       <ExportMenu />
+      <ShareMenu v-if="auth.canEdit" />
       <n-button
         size="small"
         quaternary
@@ -121,9 +128,12 @@ watch(
       >
         {{ settings.appTheme === 'dark' ? '🌙' : '☀️' }}
       </n-button>
-      <n-button size="small" quaternary @click="router.push('/settings')">设置</n-button>
+      <n-tag v-if="auth.isReviewer" type="info" :bordered="false">审阅只读</n-tag>
+      <n-button size="small" quaternary @click="accountSettingsShow = true">账号</n-button>
+      <n-button v-if="auth.isAdmin" size="small" quaternary @click="router.push('/settings')">模型设置</n-button>
     </header>
 
+    <AccountSettingsDialog v-model:show="accountSettingsShow" />
     <n-modal
       v-model:show="showGlobalConstraints"
       preset="card"
@@ -153,7 +163,7 @@ watch(
       <main class="col-center">
         <CanvasPanel />
       </main>
-      <ResizableInspectorPanel>
+      <ResizableInspectorPanel v-if="auth.canEdit">
         <n-tabs type="line" size="small" default-value="refine" class="inspector-tabs">
           <n-tab-pane name="refine" tab="微调">
             <RefineChat />

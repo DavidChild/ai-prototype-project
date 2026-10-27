@@ -1,12 +1,13 @@
 import { fileURLToPath, URL } from 'node:url'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
-import { defineConfig, type Connect, type Plugin } from 'vite'
+import { defineConfig, loadEnv, type Connect, type Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import vueDevTools from 'vite-plugin-vue-devtools'
 import Components from 'unplugin-vue-components/vite'
 import { NaiveUiResolver } from 'unplugin-vue-components/resolvers'
 import { layrrBridgePlugin } from './server/layrrBridge'
+import { mysqlStoragePlugin } from './server/mysqlStorage'
 
 const tmagicEditorEntry = fileURLToPath(new URL('./tmagic-editor.html', import.meta.url))
 
@@ -121,7 +122,13 @@ function llmProxyPlugin(): Plugin {
 }
 
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), '')
+  const mysqlConfig = {
+    host: env.MYSQL_HOST || 'localhost', port: Number(env.MYSQL_PORT || 3306),
+    user: env.MYSQL_USER || 'root', password: env.MYSQL_PASSWORD || '', database: env.MYSQL_DATABASE || 'db_proto',
+  }
+  return {
   plugins: [
     vue(),
     vueDevTools(),
@@ -130,7 +137,8 @@ export default defineConfig({
       dts: 'src/components.d.ts',
     }),
     llmProxyPlugin(),
-    layrrBridgePlugin(),
+    mysqlStoragePlugin(mysqlConfig),
+    layrrBridgePlugin(mysqlConfig),
   ],
   resolve: {
     alias: {
@@ -144,4 +152,5 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5173,
   },
+  }
 })

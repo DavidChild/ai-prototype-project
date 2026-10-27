@@ -21,6 +21,7 @@ import {
   buildRemarqExportHtml,
   remarqExportStorageKey,
 } from '@/services/annotations/remarqDocument'
+import { buildProjectPackage } from '@/services/storage/projectPackage'
 
 const wb = useWorkbenchStore()
 const message = useMessage()
@@ -80,6 +81,11 @@ const options = computed(() => [
     label: '整项目 ZIP',
     key: 'project-zip',
     disabled: !wb.pages.some((page) => !page.spec.groupOnly && wb.htmlByPage.has(page.id)),
+  },
+  {
+    label: '小豆原型项目包（.xdproto）',
+    key: 'project-package',
+    disabled: !wb.project,
   },
   { type: 'divider', key: 'directory-divider' },
   {
@@ -195,6 +201,7 @@ async function buildPageExportHtml(
 function handle(key: string | number) {
   if (key === 'choose-directory') return void chooseDirectory()
   if (exporting.value) return
+  if (key === 'project-package') return void performExport(key, true)
   dialog.info({
     title: '是否携带原型标注？',
     content: '带标注导出会内嵌 web-remarq 标注、标记点和查看工具；不带标注则只导出原型页面。',
@@ -220,7 +227,11 @@ async function performExport(key: string | number, includeAnnotations: boolean) 
       if (loading) loading.content = content
     }
 
-    if (key === 'selected-png' && selectedPages.length) {
+    if (key === 'project-package') {
+      loading.content = '正在打包项目数据…'
+      const blob = await buildProjectPackage(project.id)
+      await writeExportFile(directory, [sanitizeFileName(project.name) + '.xdproto'], blob)
+    } else if (key === 'selected-png' && selectedPages.length) {
       const background = project.styleSpec.tokens.colorMode === 'dark' ? '#0b0b0e' : '#ffffff'
       for (let index = 0; index < selectedPages.length; index++) {
         const page = selectedPages[index]!

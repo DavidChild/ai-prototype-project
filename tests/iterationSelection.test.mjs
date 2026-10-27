@@ -1,4 +1,3 @@
-import 'fake-indexeddb/auto'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createJiti } from 'jiti'

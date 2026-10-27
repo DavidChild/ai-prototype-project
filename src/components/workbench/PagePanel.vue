@@ -1,13 +1,42 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useDialog, useMessage, type TreeSelectOption } from 'naive-ui'
+import { nanoid } from 'nanoid'
 import type { Page, PageGenStatus } from '@/types/page'
 import { useWorkbenchStore } from '@/stores/workbench'
+import { useSettingsStore } from '@/stores/settings'
 import PageTreeList from './PageTreeList.vue'
+import { useAuthStore } from '@/stores/auth'
+import { useRouter } from 'vue-router'
+import { importProjectPackage } from '@/services/storage/projectPackage'
+import { normalizeImage } from '@/services/parsing/imageOps'
+import { imageToHtml } from '@/services/generation/imageToHtml'
 
 const wb = useWorkbenchStore()
+const auth = useAuthStore()
+const settings = useSettingsStore()
 const dialog = useDialog()
 const message = useMessage()
+const router = useRouter()
+const projectPackageInput = ref<HTMLInputElement | null>(null)
+const importingProject = ref(false)
+
+type BatchImportStatus = 'pending' | 'reading' | 'generating' | 'saving' | 'done' | 'failed'
+interface BatchImportItem {
+  id: string
+  file: File
+  kind: 'html' | 'image'
+  name: string
+  status: BatchImportStatus
+  error?: string
+}
+
+const batchShow = ref(false)
+const batchFileInput = ref<HTMLInputElement | null>(null)
+const batchItems = ref<BatchImportItem[]>([])
+const batchParentId = ref('')
+const batchImporting = ref(false)
+let batchController: AbortController | null = null
 
 const addShow = ref(false)
 const addName = ref('')
@@ -71,6 +100,182 @@ const selectedParentKey = computed({
     addParentId.value = value && value !== ROOT_PARENT_KEY ? String(value) : ''
   },
 })
+
+const selectedBatchParentKey = computed({
+  get: () => batchParentId.value || ROOT_PARENT_KEY,
+  set: (value: string | number | null) => {
+    batchParentId.value = value && value !== ROOT_PARENT_KEY ? String(value) : ''
+  },
+})
+
+const batchDoneCount = computed(
+  () => batchItems.value.filter((item) => item.status === 'done').length,
+)
+
+function batchStatusLabel(status: BatchImportStatus): string {
+  return {
+    pending: '待导入',
+    reading: '读取中',
+    generating: 'AI 还原中',
+    saving: '写入中',
+    done: '已完成',
+    failed: '失败',
+  }[status]
+}
+
+function filePageName(filename: string): string {
+  return filename.replace(/\.(?:html?|png|jpe?g|webp)$/i, '').trim() || '导入页面'
+}
+
+function openBatchImport() {
+  batchItems.value = []
+  batchParentId.value = ''
+  batchShow.value = true
+}
+
+function closeBatchImport() {
+  if (!batchImporting.value) batchShow.value = false
+}
+
+function readBatchFiles(event: Event) {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files ?? [])
+  input.value = ''
+  if (!files.length) return
+  let rejected = 0
+  const existing = new Set(
+    batchItems.value.map((item) => `${item.file.name}:${item.file.size}:${item.file.lastModified}`),
+  )
+  for (const file of files) {
+    if (batchItems.value.length >= 30) {
+      rejected++
+      continue
+    }
+    const signature = `${file.name}:${file.size}:${file.lastModified}`
+    if (existing.has(signature)) continue
+    const html = /\.html?$/i.test(file.name)
+    const image = /\.(?:png|jpe?g|webp)$/i.test(file.name)
+    if ((!html && !image) || (html && file.size > 5 * 1024 * 1024) || (image && file.size > 10 * 1024 * 1024)) {
+      rejected++
+      continue
+    }
+    existing.add(signature)
+    batchItems.value.push({
+      id: nanoid(),
+      file,
+      kind: html ? 'html' : 'image',
+      name: filePageName(file.name),
+      status: 'pending',
+    })
+  }
+  if (rejected) message.warning(`有 ${rejected} 个文件格式不支持、超出大小限制或超过 30 个文件上限`)
+}
+
+function removeBatchItem(id: string) {
+  if (batchImporting.value) return
+  batchItems.value = batchItems.value.filter((item) => item.id !== id)
+}
+
+function validateImportedHtml(html: string): string {
+  const parsed = new DOMParser().parseFromString(html, 'text/html')
+  if (!html.trim() || !/<[a-z][^>]*>/i.test(html) || !parsed.body.innerHTML.trim())
+    throw new Error('文件中没有可导入的 HTML 页面内容')
+  return html
+}
+
+async function originalImageSize(file: File): Promise<{ width: number; height: number }> {
+  const bitmap = await createImageBitmap(file)
+  try {
+    return { width: bitmap.width, height: bitmap.height }
+  } finally {
+    bitmap.close()
+  }
+}
+
+async function runBatchImport() {
+  const projectId = wb.project?.id
+  const pending = batchItems.value.filter((item) => item.status !== 'done')
+  if (!projectId || !pending.length || batchImporting.value) return
+  if (pending.some((item) => !item.name.trim())) {
+    message.warning('请补全所有页面名称')
+    return
+  }
+  const resolved = pending.some((item) => item.kind === 'image')
+    ? settings.resolveModel('generation', wb.project?.modelOverride)
+    : undefined
+  if (pending.some((item) => item.kind === 'image') && !resolved) {
+    message.error('图片导入需要先配置支持图片输入的页面生成模型')
+    return
+  }
+  const controller = new AbortController()
+  batchController = controller
+  batchImporting.value = true
+  let imported = 0
+  for (const item of pending) {
+    if (controller.signal.aborted || wb.project?.id !== projectId) break
+    item.error = undefined
+    try {
+      let html: string
+      if (item.kind === 'html') {
+        item.status = 'reading'
+        html = validateImportedHtml(await item.file.text())
+      } else {
+        item.status = 'generating'
+        const size = await originalImageSize(item.file)
+        const normalized = await normalizeImage(item.file, 'upload')
+        if (!normalized) throw new Error('图片无法读取或尺寸过小（至少 32 × 32）')
+        html = await imageToHtml({
+          ...resolved!,
+          image: normalized.blob,
+          name: item.name.trim(),
+          instruction:
+            '严格按照参考图内容和样式进行 1:1 高保真还原，不允许美化、简化、改写、增删或移动任何可见内容。保持原图尺寸比例、布局、间距、颜色、字体、文字、图标和视觉层级，所有元素使用可编辑 HTML/CSS 实现。',
+          viewportWidth: size.width,
+          viewportHeight: size.height,
+          maxTokens: settings.genParams.maxTokens,
+          signal: controller.signal,
+        })
+      }
+      controller.signal.throwIfAborted()
+      if (wb.project?.id !== projectId) throw new Error('项目已切换，已停止批量导入')
+      item.status = 'saving'
+      await wb.createImportedPage(item.name.trim(), html, batchParentId.value || undefined)
+      item.status = 'done'
+      imported++
+    } catch (error) {
+      item.status = 'failed'
+      item.error = controller.signal.aborted
+        ? '已停止，尚未导入'
+        : error instanceof Error
+          ? error.message
+          : '导入失败'
+    }
+  }
+  batchImporting.value = false
+  batchController = null
+  const failed = batchItems.value.filter((item) => item.status === 'failed').length
+  if (controller.signal.aborted) {
+    message.warning(`已停止批量导入，本次完成 ${imported} 个页面`)
+  } else if (failed) {
+    message.warning(`已导入 ${imported} 个页面，${failed} 个失败，可修正后重试`)
+  } else {
+    message.success(`已批量导入 ${imported} 个页面`)
+    batchShow.value = false
+  }
+}
+
+function stopBatchImport() {
+  batchController?.abort()
+}
+
+onBeforeUnmount(() => batchController?.abort())
+watch(
+  () => wb.project?.id,
+  () => {
+    batchController?.abort()
+    batchShow.value = false
+  },
+)
 
 const selectedParentPath = computed(() => {
   if (!addParentId.value) return '项目根层级 › 一级菜单'
@@ -169,11 +374,34 @@ function openAdd(parentId = '') {
   addGroupOnly.value = false
   addShow.value = true
 }
+
+function continueProjectGeneration() {
+  if (!wb.project || wb.pages.length) return
+  void router.push({ path: '/project/new', query: { initialize: wb.project.id } })
+}
+
+async function importPackage(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  const projectId = wb.project?.id
+  if (!file || !projectId || wb.pages.length || importingProject.value) return
+  importingProject.value = true
+  try {
+    await importProjectPackage(file, projectId)
+    await wb.load(projectId)
+    message.success('项目包已导入')
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '项目包导入失败')
+  } finally {
+    importingProject.value = false
+  }
+}
 </script>
 
 <template>
   <div class="page-panel">
-    <div class="panel-head">
+    <div v-if="auth.canEdit" class="panel-head">
       <n-progress
         type="line"
         :percentage="
@@ -229,11 +457,21 @@ function openAdd(parentId = '') {
     </div>
 
     <n-scrollbar class="panel-body">
-      <PageTreeList :status-meta="STATUS_META" @add="openAdd" @remove="confirmRemove" />
+      <div v-if="auth.canEdit && !wb.pages.length && wb.project" class="empty-project-actions">
+        <strong>初始化空项目</strong>
+        <n-text depth="3">补充需求并由 AI 生成，或导入小豆原型项目包。</n-text>
+        <n-button type="primary" block @click="continueProjectGeneration">一键生成项目原型</n-button>
+        <n-button block secondary :loading="importingProject" @click="projectPackageInput?.click()">导入项目包</n-button>
+        <input ref="projectPackageInput" type="file" accept=".xdproto,application/x-xiaodou-prototype" hidden @change="importPackage" />
+      </div>
+      <PageTreeList v-else :status-meta="STATUS_META" @add="openAdd" @remove="confirmRemove" />
     </n-scrollbar>
 
-    <div class="panel-foot">
-      <n-button size="small" dashed block @click="openAdd()">+ 新增菜单/页面</n-button>
+    <div v-if="auth.canEdit" class="panel-foot">
+      <div class="panel-foot-actions">
+        <n-button size="small" dashed @click="openAdd()">+ 新增菜单/页面</n-button>
+        <n-button size="small" dashed @click="openBatchImport">批量导入</n-button>
+      </div>
     </div>
 
     <n-modal v-model:show="addShow" preset="card" title="新增菜单/页面" style="width: 440px">
@@ -269,6 +507,127 @@ function openAdd(parentId = '') {
         </n-space>
       </template>
     </n-modal>
+
+    <n-modal
+      v-model:show="batchShow"
+      preset="card"
+      title="批量导入页面"
+      style="width: 760px; max-width: 95vw"
+      :mask-closable="!batchImporting"
+      :closable="!batchImporting"
+      :close-on-esc="!batchImporting"
+    >
+      <n-space vertical size="large">
+        <n-alert type="info" :bordered="false">
+          HTML 文件会直接创建为页面，不调用 AI；PNG、JPEG、WebP 图片会调用当前页面生成模型，严格按原图内容与样式进行 1:1 高保真还原。支持混合选择，单次最多 30 个文件。
+        </n-alert>
+        <n-form label-placement="left" label-width="76" size="small">
+          <n-form-item label="导入位置">
+            <n-tree-select
+              v-model:value="selectedBatchParentKey"
+              :options="parentTreeOptions"
+              show-line
+              show-path
+              filterable
+              separator=" › "
+              :disabled="batchImporting"
+              placeholder="选择一级菜单或上级页面"
+            />
+          </n-form-item>
+          <n-form-item label="选择文件">
+            <div class="batch-file-picker">
+              <n-button secondary :disabled="batchImporting" @click="batchFileInput?.click()">
+                选择 HTML 或图片
+              </n-button>
+              <n-text depth="3">HTML 最大 5 MB，图片最大 10 MB，可多选、可混选</n-text>
+              <input
+                ref="batchFileInput"
+                type="file"
+                multiple
+                accept=".html,.htm,text/html,image/png,image/jpeg,image/webp"
+                hidden
+                @change="readBatchFiles"
+              />
+            </div>
+          </n-form-item>
+        </n-form>
+
+        <div v-if="batchItems.length" class="batch-list">
+          <div class="batch-list-head">
+            <strong>待处理页面</strong>
+            <span>{{ batchDoneCount }}/{{ batchItems.length }} 已完成</span>
+          </div>
+          <n-progress
+            v-if="batchImporting || batchDoneCount"
+            type="line"
+            :percentage="Math.round((batchDoneCount / batchItems.length) * 100)"
+            :show-indicator="false"
+            :height="4"
+          />
+          <div v-for="item in batchItems" :key="item.id" class="batch-item">
+            <n-tag size="small" :bordered="false" :type="item.kind === 'html' ? 'info' : 'warning'">
+              {{ item.kind === 'html' ? 'HTML' : '图片' }}
+            </n-tag>
+            <div class="batch-item-main">
+              <n-input
+                v-model:value="item.name"
+                size="small"
+                placeholder="页面名称"
+                :disabled="batchImporting || item.status === 'done'"
+              />
+              <span class="batch-filename" :title="item.file.name">{{ item.file.name }}</span>
+              <span v-if="item.error" class="batch-error">{{ item.error }}</span>
+            </div>
+            <n-tag
+              size="small"
+              :bordered="false"
+              :type="
+                item.status === 'done'
+                  ? 'success'
+                  : item.status === 'failed'
+                    ? 'error'
+                    : item.status === 'pending'
+                      ? 'default'
+                      : 'info'
+              "
+            >
+              {{ batchStatusLabel(item.status) }}
+            </n-tag>
+            <n-button
+              quaternary
+              size="tiny"
+              title="移除"
+              :disabled="batchImporting"
+              @click="removeBatchItem(item.id)"
+            >
+              ×
+            </n-button>
+          </div>
+        </div>
+        <n-empty v-else size="small" description="请选择需要导入的 HTML 或页面截图" />
+      </n-space>
+      <template #footer>
+        <div class="batch-footer">
+          <n-text v-if="batchItems.some((item) => item.kind === 'image')" depth="3">
+            图片还原会消耗当前渠道 Token
+          </n-text>
+          <n-space justify="end">
+            <n-button v-if="batchImporting" type="warning" secondary @click="stopBatchImport">
+              停止
+            </n-button>
+            <n-button :disabled="batchImporting" @click="closeBatchImport">取消</n-button>
+            <n-button
+              type="primary"
+              :loading="batchImporting"
+              :disabled="!batchItems.some((item) => item.status !== 'done')"
+              @click="runBatchImport"
+            >
+              {{ batchItems.some((item) => item.status === 'failed') ? '重试失败项' : '开始批量导入' }}
+            </n-button>
+          </n-space>
+        </div>
+      </template>
+    </n-modal>
   </div>
 </template>
 
@@ -293,6 +652,23 @@ function openAdd(parentId = '') {
 
 .panel-body {
   flex: 1;
+}
+
+.empty-project-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 24px 14px;
+}
+
+.empty-project-actions strong {
+  font-size: 14px;
+}
+
+.empty-project-actions :deep(.n-text) {
+  margin-bottom: 4px;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .menu-group {
@@ -364,6 +740,16 @@ function openAdd(parentId = '') {
   border-top: 1px solid var(--qp-border);
 }
 
+.panel-foot-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.panel-foot-actions :deep(.n-button) {
+  width: 100%;
+}
+
 .parent-picker {
   width: 100%;
   min-width: 0;
@@ -375,5 +761,86 @@ function openAdd(parentId = '') {
   font-size: 11px;
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+.batch-file-picker {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.batch-list {
+  max-height: 390px;
+  overflow: auto;
+  border: 1px solid var(--qp-border);
+  border-radius: 6px;
+}
+
+.batch-list-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--qp-panel, var(--n-color));
+  border-bottom: 1px solid var(--qp-border);
+  font-size: 12px;
+}
+
+.batch-list-head span,
+.batch-filename {
+  color: var(--qp-text-faint);
+}
+
+.batch-item {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr) auto 28px;
+  align-items: start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--qp-border);
+}
+
+.batch-item:last-child {
+  border-bottom: 0;
+}
+
+.batch-item-main {
+  min-width: 0;
+}
+
+.batch-filename,
+.batch-error {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.batch-error {
+  color: #ef4444;
+}
+
+.batch-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+@media (max-width: 640px) {
+  .panel-foot-actions,
+  .batch-item {
+    grid-template-columns: 1fr;
+  }
+
+  .batch-footer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 </style>

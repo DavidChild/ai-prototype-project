@@ -26,7 +26,7 @@ watch(
   <div>
     <n-alert v-if="!settings.providers.length" type="warning" :bordered="false">
       尚未配置任何服务商。
-      <n-button text type="primary" @click="router.push('/settings')">前往设置</n-button>
+      <n-button text type="primary" @click="router.push('/settings')">前往模型设置</n-button>
     </n-alert>
 
     <template v-else>

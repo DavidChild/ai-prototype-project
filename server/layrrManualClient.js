@@ -1342,7 +1342,7 @@ async function waitForVersion(id, submittedHtml, payload) {
       if (data.pendingSubmissionId !== id)
         throw Object.assign(new Error('版本提交已失效，请保留修改并重新提交'), { status: 409 })
       status(Date.now() - started > 10000
-        ? '已写入AI工作区，正在等待保存版本。请保持 QuickPage 原工作区打开。'
+        ? '已写入AI工作区，正在等待保存版本。请保持小豆原型原工作区打开。'
         : '已写入AI工作区，正在自动保存到页面历史…')
     } catch (error) {
       if (error.status >= 400 && error.status < 500) {

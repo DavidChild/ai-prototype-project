@@ -9,6 +9,7 @@ import { formatBytes } from '@/utils/format'
 
 const wizard = useCreateWizardStore()
 const settings = useSettingsStore()
+withDefaults(defineProps<{ allowEmpty?: boolean }>(), { allowEmpty: true })
 
 const dragOver = ref(false)
 const inputEl = ref<HTMLInputElement | null>(null)
@@ -62,6 +63,26 @@ const budget = computed(() => settings.genParams.analysisInputBudget)
 
 <template>
   <div>
+    <n-radio-group v-if="allowEmpty" v-model:value="wizard.creationMode" class="creation-mode">
+      <n-radio-button value="document">上传需求文档</n-radio-button>
+      <n-radio-button value="empty">创建空项目</n-radio-button>
+    </n-radio-group>
+
+    <template v-if="wizard.creationMode === 'empty'">
+      <n-alert type="info" :bordered="false">
+        将使用前两步配置创建空项目，不上传文档、不调用 AI，进入项目后可自行添加页面。
+      </n-alert>
+      <n-form-item label="项目名称" required class="empty-project-name">
+        <n-input
+          v-model:value="wizard.projectName"
+          maxlength="80"
+          show-count
+          placeholder="请输入空项目名称"
+        />
+      </n-form-item>
+    </template>
+
+    <template v-else>
     <div
       class="dropzone"
       :class="{ over: dragOver }"
@@ -167,10 +188,20 @@ const budget = computed(() => settings.genParams.analysisInputBudget)
         <pre class="doc-preview">{{ previewDoc?.text }}</pre>
       </n-scrollbar>
     </n-modal>
+    </template>
   </div>
 </template>
 
 <style scoped>
+.creation-mode {
+  margin-bottom: 18px;
+}
+
+.empty-project-name {
+  max-width: 520px;
+  margin-top: 20px;
+}
+
 .dropzone {
   border: 1px dashed var(--qp-border-strong);
   border-radius: 10px;

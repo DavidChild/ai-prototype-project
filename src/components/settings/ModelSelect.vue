@@ -12,7 +12,7 @@ const emit = defineEmits<{ (e: 'update:modelValue', v: ModelRef | null): void }>
 const settings = useSettingsStore()
 
 const providerOptions = computed(() =>
-  settings.providers.map((p) => ({ label: p.name, value: p.id })),
+  settings.providers.map((p) => ({ label: `${p.name}（${p.source === 'platform' ? '平台渠道' : '自有渠道'}）`, value: p.id })),
 )
 
 const modelOptions = computed(() => {

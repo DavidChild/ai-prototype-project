@@ -14,6 +14,10 @@ export interface ProviderConfig {
   corsHint: CorsHint
   /** 经本地开发服务器转发（绕过 CORS，仅 dev/preview 可用） */
   useProxy?: boolean
+  /** 租户共享或平台提供的托管通道，密钥始终保存在服务端。 */
+  managed?: boolean
+  source?: 'tenant' | 'platform'
+  hasCredential?: boolean
 }
 
 export interface ModelRef {

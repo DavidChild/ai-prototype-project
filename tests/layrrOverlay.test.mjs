@@ -85,3 +85,24 @@ test('workspace toasts sit above the editor bar at the top and wrap long error t
   assert.match(adapted, /text\.textContent = String\(msg\)/)
   assert.doesNotMatch(adapted, /el\.innerHTML = `<i class="\$\{ic\}"><\/i><span>\$\{msg\}<\/span>`/)
 })
+
+test('workspace overlay localizes all primary Layrr controls and feedback', () => {
+  const adapted = adaptLayrrWorkspaceOverlay(original)
+  for (const text of [
+    'AI 局部编辑',
+    '描述你希望 AI 如何修改选中元素…',
+    '修改历史',
+    '暂无修改记录',
+    '点击选择一个元素',
+    'AI 正在修改…',
+    '修改完成',
+    '确认恢复到此版本？',
+  ]) assert.ok(adapted.includes(text), `missing localized text: ${text}`)
+  for (const text of [
+    'Describe the change...',
+    'Click to select an element',
+    'Edit timed out',
+    'Done!',
+    'Revert to this version?',
+  ]) assert.ok(!adapted.includes(text), `found untranslated text: ${text}`)
+})

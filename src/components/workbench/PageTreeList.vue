@@ -6,6 +6,7 @@ import { imageToHtml } from '@/services/generation/imageToHtml'
 import { useDialog, useMessage } from 'naive-ui'
 import type { Page, PageGenStatus } from '@/types/page'
 import { useWorkbenchStore } from '@/stores/workbench'
+import { useAuthStore } from '@/stores/auth'
 import {
   pageSubtreeIds,
   visiblePageTreeRows,
@@ -16,6 +17,7 @@ import {
 defineProps<{ statusMeta: Record<PageGenStatus, { label: string; color: string }> }>()
 const emit = defineEmits<{ add: [parentId: string]; remove: [page: Page] }>()
 const wb = useWorkbenchStore()
+const auth = useAuthStore()
 const message = useMessage()
 const dialog = useDialog()
 const importShow = ref(false)
@@ -607,7 +609,7 @@ function handlePageAction(page: Page, key: string) {
         :title="page.reviewPending ? `${page.spec.name}（AI 变更待审阅）` : page.spec.name"
         >{{ page.spec.name }}</span
       >
-      <span class="item-actions" @click.stop>
+      <span v-if="auth.canEdit" class="item-actions" @click.stop>
         <n-dropdown
           trigger="click"
           :options="[

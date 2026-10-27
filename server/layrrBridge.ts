@@ -6,6 +6,9 @@ import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer, WebSocket } from 'ws'
 import type { Plugin } from 'vite'
+import mysql from 'mysql2/promise'
+import type { MysqlStorageConfig } from './mysqlStorage'
+import { actorFromRequest, requireActor, resolveProjectAccess } from './saasAuth'
 import { adaptLayrrWorkspaceOverlay } from './layrrOverlay'
 import { htmlRevision, manualEditorShell, validateManualSave } from './layrrManual'
 import { gridstackEditorShell } from './gridstackEditor'
@@ -76,8 +79,9 @@ function json(res: ServerResponse, value: unknown, status = 200) {
   res.end(JSON.stringify(value))
 }
 
-/** Uses the official Layrr overlay, with a QuickPage provider/patch adapter instead of a CLI agent. */
-export function layrrBridgePlugin(): Plugin {
+/** Uses the official Layrr overlay, with a 小豆原型 provider/patch adapter instead of a CLI agent. */
+export function layrrBridgePlugin(config: MysqlStorageConfig): Plugin {
+  const authPool = mysql.createPool({ ...config, connectionLimit: 4, supportBigNumbers: true, charset: 'utf8mb4' })
   return {
     name: 'quickpage-layrr-bridge',
     configureServer(vite) {
@@ -101,6 +105,7 @@ export function layrrBridgePlugin(): Plugin {
       >()
       vite.httpServer?.once('close', () => {
         for (const session of sessions.values()) session.close()
+        void authPool.end()
       })
       const cleanupIdleSessions = () => {
         const now = Date.now()
@@ -122,7 +127,7 @@ export function layrrBridgePlugin(): Plugin {
             (origin && new URL(origin).host !== req.headers.host) ||
             !['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '')
           ) {
-            json(res, { error: '仅允许本机 QuickPage 访问' }, 403)
+            json(res, { error: '仅允许本机小豆原型访问' }, 403)
             return
           }
           const parts = (req.url ?? '').split('?')[0]!.split('/').filter(Boolean)
@@ -137,6 +142,8 @@ export function layrrBridgePlugin(): Plugin {
               typeof input.baseline !== 'string'
             )
               throw new Error('缺少页面或版本信息')
+            const actor = requireActor(await actorFromRequest(authPool, req))
+            await resolveProjectAccess(authPool, actor, input.projectId, 'write')
             if (sessions.size >= 8) throw new Error('最多打开 8 个工作区，请先关闭其他工作区')
             const id = randomBytes(24).toString('hex')
             const folder = join(vite.config.root, '.quickpage-layrr', id)

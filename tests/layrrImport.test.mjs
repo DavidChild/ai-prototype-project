@@ -1,15 +1,9 @@
-import 'fake-indexeddb/auto'
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createJiti } from 'jiti'
-import { fileURLToPath } from 'node:url'
-const jiti = createJiti(import.meta.url, {
-  alias: { '@': fileURLToPath(new URL('../src', import.meta.url)) },
-})
-const { db } = await jiti.import('../src/services/storage/db.ts')
-const { pageRepo, versionRepo } = await jiti.import('../src/services/storage/repositories.ts')
-test('Layrr import is bound to original iteration and baseline; conflicts never overwrite', async () => {
-  try {
+import { startStorageTest } from './storageTestHarness.mjs'
+test('Layrr import is bound to original iteration and baseline; conflicts never overwrite', async (t) => {
+    const { projectRepo, pageRepo, versionRepo } = await startStorageTest(t)
+    await projectRepo.create({ id: 'iteration-a', name: 'Layrr test', createdAt: 1, updatedAt: 1 })
     await pageRepo.create({
       id: 'page',
       projectId: 'iteration-a',
@@ -21,7 +15,7 @@ test('Layrr import is bound to original iteration and baseline; conflicts never 
     const base = await versionRepo.add('page', '<p>base</p>', 'generate')
     await assert.rejects(
       versionRepo.importLayrr('iteration-b', 'page', base.id, '<p>wrong</p>', '调整文字'),
-      /不属于/,
+      /项目不存在|不属于/,
     )
     for (const note of ['', '   ', 'a'.repeat(501)]) {
       await assert.rejects(
@@ -38,7 +32,7 @@ test('Layrr import is bound to original iteration and baseline; conflicts never 
     assert.equal(retried.id, edited.id)
     await assert.rejects(
       versionRepo.importLayrr('iteration-b', 'page', base.id, '<p>edited</p>', '调整文字', 'first-submission'),
-      /不属于/,
+      /项目不存在|不属于/,
     )
     await assert.rejects(
       versionRepo.importLayrr('iteration-a', 'page', base.id, '<p>different</p>', '调整文字', 'first-submission'),
@@ -68,7 +62,4 @@ test('Layrr import is bound to original iteration and baseline; conflicts never 
       versionRepo.importLayrr('iteration-a', 'page', next.id, ai.html, '调整标题', 'ai-submission', 'layrr'),
       /不一致/,
     )
-  } finally {
-    await db.delete()
-  }
 })

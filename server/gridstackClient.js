@@ -271,7 +271,7 @@ try {
       const result = await request('POST', { html: exportHtml(), revision })
       revision = result.revision
       saved = JSON.stringify(layout())
-      status('已写入工作区。请返回 QuickPage 检查并确认保存到当前迭代。')
+      status('已写入工作区。请返回小豆原型检查并确认保存到当前迭代。')
     } catch (error) {
       status('保存失败：' + error.message)
     } finally {

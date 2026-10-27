@@ -1,8 +1,11 @@
 import type { AnnotationStore } from 'web-remarq'
 import webRemarqRuntime from '../../../node_modules/web-remarq/dist/web-remarq.global.js?raw'
 import { ANNOTATION_DIRECTION_OPTIONS } from './annotationDirections'
+import { adaptWebRemarqRuntime } from './remarqLocalization'
 
 export const EMPTY_ANNOTATION_STORE: AnnotationStore = { version: 1, annotations: [] }
+
+const localizedWebRemarqRuntime = adaptWebRemarqRuntime(webRemarqRuntime)
 
 export function cloneAnnotationStore(store?: AnnotationStore): AnnotationStore {
   return JSON.parse(JSON.stringify(store ?? EMPTY_ANNOTATION_STORE)) as AnnotationStore
@@ -459,13 +462,13 @@ function bootstrapScript(config: {
   const enhanceAnnotationEditing = () => {
     const popup = document.querySelector('.remarq-popup');
     if (!(popup instanceof HTMLElement)) return;
-    const addTextarea = popup.querySelector('textarea[placeholder="Add your comment..."]');
+    const addTextarea = popup.querySelector('textarea[placeholder="请输入原型标注说明…"]');
     if (addTextarea instanceof HTMLTextAreaElement) {
       keepEnterAsNewline(addTextarea);
       const hint = popup.querySelector('.remarq-popup-hint');
       if (hint instanceof HTMLElement) hint.textContent = 'Enter 换行 · 点击“保存标注”保存';
       const addButton = Array.from(popup.querySelectorAll('.remarq-popup-actions button'))
-        .find((button) => button.textContent === 'Add');
+        .find((button) => button.textContent === '保存标注');
       if (addButton instanceof HTMLButtonElement) addButton.textContent = '保存标注';
     }
     const editTextarea = popup.querySelector('.remarq-popup-edit-textarea');
@@ -509,7 +512,7 @@ function bootstrapScript(config: {
   const enhanceAddPopup = () => {
     if (!channel || !(selectedElementForDraft instanceof HTMLElement)) return;
     const popup = document.querySelector('.remarq-popup');
-    const textarea = popup?.querySelector('textarea[placeholder="Add your comment..."]');
+    const textarea = popup?.querySelector('textarea[placeholder="请输入原型标注说明…"]');
     const body = popup?.querySelector('.remarq-popup-body');
     if (!(popup instanceof HTMLElement) || !(textarea instanceof HTMLTextAreaElement) ||
         !(body instanceof HTMLElement) || popup.querySelector('.quickpage-remarq-popup-ai')) return;
@@ -604,7 +607,7 @@ function bootstrapScript(config: {
     const inspectedElement = pendingInspectedElement;
     pendingInspectedElement = null;
     if (!(target instanceof HTMLElement) || inspectedElement !== target) return;
-    const textarea = document.querySelector('.remarq-popup textarea[placeholder="Add your comment..."]');
+    const textarea = document.querySelector('.remarq-popup textarea[placeholder="请输入原型标注说明…"]');
     if (!(textarea instanceof HTMLTextAreaElement)) return;
     selectedElementForDraft = target;
     enhanceAddPopup();
@@ -833,7 +836,7 @@ function bootstrapScript(config: {
     const popup = document.querySelector('.remarq-popup');
     const body = popup?.querySelector('.remarq-popup-body');
     if (!(popup instanceof HTMLElement) || !(body instanceof HTMLElement) ||
-        popup.querySelector('textarea[placeholder="Add your comment..."]')) return;
+        popup.querySelector('textarea[placeholder="请输入原型标注说明…"]')) return;
     const annotation = currentAnnotation();
     if (!annotation) return;
     popup.querySelector('.remarq-popup-quality')?.remove();
@@ -964,7 +967,7 @@ export function buildRemarqPreviewHtml(
   store: AnnotationStore | undefined,
   options: { channel: string; theme: 'light' | 'dark' },
 ): string {
-  const scripts = `<script>${safeScript(webRemarqRuntime)}</script>${bootstrapScript({
+  const scripts = `<script>${safeScript(localizedWebRemarqRuntime)}</script>${bootstrapScript({
     store: store ?? EMPTY_ANNOTATION_STORE,
     channel: options.channel,
     theme: options.theme,
@@ -978,7 +981,7 @@ export function buildRemarqExportHtml(
   store: AnnotationStore | undefined,
   options: { storageKey: string; theme: 'light' | 'dark' },
 ): string {
-  const scripts = `<script>${safeScript(webRemarqRuntime)}</script>${bootstrapScript({
+  const scripts = `<script>${safeScript(localizedWebRemarqRuntime)}</script>${bootstrapScript({
     store: store ?? EMPTY_ANNOTATION_STORE,
     storageKey: options.storageKey,
     theme: options.theme,

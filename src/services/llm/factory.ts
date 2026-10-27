@@ -3,11 +3,29 @@ import { LLMError } from './errors'
 import { AnthropicClient } from './anthropicClient'
 import { OpenAIClient } from './openaiClient'
 import type { LLMClient } from './types'
+import { storageRequest } from '@/services/storage/db'
 
 export function createClient(provider: ProviderConfig): LLMClient {
-  return provider.protocol === 'anthropic'
+  const client = provider.protocol === 'anthropic'
     ? new AnthropicClient(provider)
     : new OpenAIClient(provider)
+  return {
+    listModels: () => client.listModels(),
+    async chat(req, opts) {
+      const result = await client.chat(req, opts)
+      if (result.usage) {
+        const match = location.pathname.match(/^\/project\/([^/]+)/)
+        void storageRequest('usage.record', {
+          projectId: match ? decodeURIComponent(match[1]!) : undefined,
+          operation: 'llm.chat', provider: provider.protocol, model: req.model,
+          inputTokens: result.usage.input, outputTokens: result.usage.output,
+          channelScope: provider.source ?? 'tenant',
+          providerId: provider.id,
+        }).catch(() => {})
+      }
+      return result
+    },
+  }
 }
 
 /** 连通性测试：优先拉取模型列表；未实现该接口的服务商退化为最小对话请求 */

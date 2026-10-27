@@ -11,8 +11,8 @@ import {
   analyzeRequirements,
   MAX_ANALYSIS_IMAGES,
 } from '@/services/generation/analyzeRequirements'
-import { db, type SourceDoc, type StoredAsset } from '@/services/storage/db'
-import { assetRepo, docRepo, pageRepo, projectRepo } from '@/services/storage/repositories'
+import type { SourceDoc, StoredAsset } from '@/services/storage/db'
+import { createProjectBundle, saveImportedProjectBundle } from '@/services/storage/repositories'
 import { estimateTokens, truncateStructured } from '@/utils/tokenBudget'
 import { uniquePageName } from '@/utils/pageName'
 import { useSettingsStore } from './settings'
@@ -40,6 +40,7 @@ export const useCreateWizardStore = defineStore('createWizard', () => {
 
   const files = ref<WizardFile[]>([])
   const selectedImageIds = ref<string[]>([])
+  const creationMode = ref<'document' | 'empty'>('document')
 
   const analyzing = ref(false)
   const streamText = ref('')
@@ -128,7 +129,7 @@ export const useCreateWizardStore = defineStore('createWizard', () => {
   async function runAnalysis() {
     const resolved = settings.resolveModel('analysis')
     if (!resolved) {
-      analysisError.value = '尚未配置「需求理解模型」，请先到设置页完成配置'
+      analysisError.value = '尚未配置「需求理解模型」，请先到模型设置完成配置'
       return
     }
     analyzing.value = true
@@ -170,16 +171,27 @@ export const useCreateWizardStore = defineStore('createWizard', () => {
     abortCtl?.abort()
   }
 
-  async function createProject(): Promise<string> {
-    if (!analysis.value) throw new Error('需求理解结果为空')
-    const a = JSON.parse(JSON.stringify(analysis.value)) as RequirementAnalysis
+  async function createProject(
+    createEmpty = creationMode.value === 'empty',
+    targetProjectId?: string,
+  ): Promise<string> {
+    if (targetProjectId && createEmpty) throw new Error('当前空项目无需重复创建')
+    if (createEmpty && !projectName.value.trim()) throw new Error('请填写项目名称')
+    if (!createEmpty && !analysis.value) throw new Error('需求理解结果为空')
+    const a: RequirementAnalysis = createEmpty
+      ? {
+          productName: projectName.value.trim(),
+          overview: '',
+          pages: [],
+        }
+      : JSON.parse(JSON.stringify(analysis.value)) as RequirementAnalysis
     const usedPageNames: string[] = []
     a.pages = a.pages.map((spec) => {
       const name = uniquePageName(spec.name, usedPageNames, 'v1.0')
       usedPageNames.push(name)
       return { ...spec, name }
     })
-    const projectId = nanoid()
+    const projectId = targetProjectId || nanoid()
     const now = Date.now()
     const project: Project = {
       id: projectId,
@@ -230,12 +242,10 @@ export const useCreateWizardStore = defineStore('createWizard', () => {
         })
       }
     }
-    await db.transaction('rw', [db.projects, db.pages, db.sourceDocs, db.assets], async () => {
-      await projectRepo.create(project)
-      await pageRepo.bulkCreate(pages)
-      if (docs.length) await docRepo.bulkCreate(docs)
-      if (assets.length) await assetRepo.bulkCreate(assets)
-    })
+    if (targetProjectId)
+      await saveImportedProjectBundle(project, pages, [], docs, assets, targetProjectId)
+    else
+      await createProjectBundle(project, pages, docs, assets)
     return projectId
   }
 
@@ -250,6 +260,7 @@ export const useCreateWizardStore = defineStore('createWizard', () => {
     customStyleText.value = ''
     files.value = []
     selectedImageIds.value = []
+    creationMode.value = 'document'
     analyzing.value = false
     streamText.value = ''
     reasoningText.value = ''
@@ -269,6 +280,7 @@ export const useCreateWizardStore = defineStore('createWizard', () => {
     customStyleText,
     files,
     selectedImageIds,
+    creationMode,
     availablePresets,
     parsedDocs,
     allImages,

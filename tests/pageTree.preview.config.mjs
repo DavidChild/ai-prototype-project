@@ -1,7 +1,7 @@
 import { mergeConfig } from 'vite'
 import config from '../vite.config.ts'
 
-export default mergeConfig(config, {
+export default (env) => mergeConfig(config(env), {
   server: { host: '127.0.0.1', port: 5187, strictPort: true },
   plugins: [{
     name: 'isolated-page-tree-preview',

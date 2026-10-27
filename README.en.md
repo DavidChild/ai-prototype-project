@@ -1,10 +1,10 @@
-# QuickPage (快页)
+# 小豆原型
 
 [中文](./README.md) | **English**
 
-QuickPage is a **pure-frontend** tool that batch-generates high-fidelity prototypes from requirement documents: upload your docs (docx / pdf / xlsx / csv / md / txt / images), let AI understand the requirements and produce an editable page list, then batch-generate **style-consistent high-fidelity HTML prototypes** in parallel. Refine any page conversationally (with reference images), roll back across version history, and export PNG / self-contained HTML / a project-wide ZIP.
+小豆原型 is a locally run tool that batch-generates high-fidelity prototypes from requirement documents: upload your docs (docx / pdf / xlsx / csv / md / txt / images), let AI understand the requirements and produce an editable page list, then batch-generate **style-consistent high-fidelity HTML prototypes** in parallel. Refine any page conversationally (with reference images), roll back across version history, and export PNG / self-contained HTML / a project-wide ZIP.
 
-No backend: API keys live only in your browser's localStorage, project data is stored in IndexedDB, and LLM requests either go directly from the browser to the provider or through the local Vite proxy.
+API keys remain in browser localStorage. Projects, pages, versions, documents, and image assets are persisted to MySQL by the local Vite service. LLM requests either go directly from the browser to the provider or through the local Vite proxy.
 
 ## Getting Started
 
@@ -12,6 +12,14 @@ No backend: API keys live only in your browser's localStorage, project data is s
 npm install
 npm run dev
 ```
+
+Create an empty database first (the default name is `db_proto`):
+
+```sql
+CREATE DATABASE db_proto CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+```
+
+Copy `.env.example` to `.env.local` and set `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, and `MYSQL_DATABASE`. On startup the app automatically creates the five tables (`projects`, `pages`, `page_versions`, `source_docs`, and `assets`) plus their indexes and foreign keys. No schema SQL needs to be run manually. Because the app uses the local storage API, run it with `npm run dev` or `npm run preview`; opening the static HTML directly is not supported.
 
 First run: open **Settings** → add a provider (20+ presets including OpenAI, Anthropic, OpenRouter, DeepSeek, SiliconFlow, Moonshot Kimi, Zhipu GLM, Alibaba DashScope, ModelScope, Volcengine Ark, Tencent Hunyuan, Baidu Qianfan, MiniMax, GitHub Models, Google Gemini OpenAI-compatible, Groq, Mistral, Perplexity, Together, Fireworks, Cerebras, Hugging Face, LM Studio, Ollama, New API, plus custom OpenAI-compatible or Anthropic endpoints) → paste your API key → "Test connection / fetch models" → pick an **analysis model** and a **generation model**. Provider configs are stored locally and can be edited or removed anytime; models can also be switched inline in the wizard and the workbench.
 
@@ -54,4 +62,4 @@ The app itself supports light/dark theme toggle (🌙/☀️ in the top bar).
 
 ## Tech stack
 
-Vue 3 + TypeScript + Vite + Naive UI + Pinia + Dexie (IndexedDB); document parsing: mammoth / pdfjs-dist / SheetJS; export: html-to-image / JSZip. The LLM client is hand-written `fetch` supporting both OpenAI-compatible and Anthropic protocols with streaming and multimodal messages.
+Vue 3 + TypeScript + Vite + Naive UI + Pinia + MySQL/MariaDB; document parsing: mammoth / pdfjs-dist / SheetJS; export: html-to-image / JSZip. The LLM client is hand-written `fetch` supporting both OpenAI-compatible and Anthropic protocols with streaming and multimodal messages.

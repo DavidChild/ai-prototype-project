@@ -11,7 +11,7 @@ type HtmlNode = MNode & { tag?: string; text?: string; attrs?: Record<string, st
 const root = ref<MApp | null>(null)
 const original = ref('')
 const rendered = new Map<string, HTMLElement>()
-const status = ref('正在读取 QuickPage 工作区…')
+const status = ref('正在读取小豆原型工作区…')
 const loadError = ref('')
 const id = new URLSearchParams(location.search).get('workspace')
 let revision = ''
@@ -117,7 +117,7 @@ async function save() {
   const result = await api('POST', { html, revision })
   revision = result.revision
   original.value = html
-  status.value = '已写入独立工作区；返回 QuickPage 确认导入当前迭代。'
+  status.value = '已写入独立工作区；返回小豆原型确认导入当前迭代。'
 }
 
 async function load() {
@@ -135,7 +135,7 @@ async function load() {
     id: `quickpage-${id}`,
     items: [{ type: NodeType.PAGE, id: `page-${id}`, name: '页面', style: { width: 1440, height: 1000 }, items: body }],
   } as MApp
-  status.value = '使用 tmagic-editor 编辑。完成后点击“写入工作区”，再返回 QuickPage 确认保存。'
+  status.value = '使用 tmagic-editor 编辑。完成后点击“写入工作区”，再返回小豆原型确认保存。'
 }
 
 const componentGroupList = [{ title: '网页元素', items: [
@@ -168,7 +168,7 @@ const render = async () => {
 void load().catch((error) => { status.value = error.message; loadError.value = error.message })
 const App = {
   setup: () => () => h('main', { class: 'qp-tmagic' }, [
-    h('header', [h('strong', 'QuickPage 局部编辑 · tmagic-editor'), h('button', { onClick: () => void save() }, '写入工作区')]),
+    h('header', [h('strong', '小豆原型局部编辑 · tmagic-editor'), h('button', { onClick: () => void save() }, '写入工作区')]),
     h('p', { class: 'qp-status' }, status.value),
     loadError.value ? h('pre', { class: 'qp-error' }, loadError.value) : root.value ? h(TMagicEditor, {
       modelValue: root.value,

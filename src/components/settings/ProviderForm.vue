@@ -11,7 +11,7 @@ import {
 } from '@/data/providerPresets'
 import { testProvider } from '@/services/llm/factory'
 
-const props = defineProps<{ show: boolean; provider: ProviderConfig | null }>()
+const props = defineProps<{ show: boolean; provider: ProviderConfig | null; allowedModels?: string[]; allowedPresetModels?: Record<string,string[]> }>()
 const emit = defineEmits<{
   (e: 'update:show', v: boolean): void
   (e: 'saved', v: ProviderConfig): void
@@ -36,14 +36,17 @@ const form = reactive<ProviderConfig>({
   useProxy: false,
 })
 
-const presetOptions = [
-  ...providerPresets.map((p) => ({ label: p.name, value: p.id })),
-  { label: '自定义服务商', value: 'custom' },
-]
+const isTenantMode = computed(() => !!props.allowedPresetModels)
+const presetOptions = computed(() => [
+  ...providerPresets.filter((p) => !isTenantMode.value || (props.allowedPresetModels?.[p.id]?.length ?? 0) > 0).map((p) => ({ label: p.name, value: p.id })),
+  { label: '自定义服务商（自由渠道）', value: 'custom' },
+])
 
 const selectedPreset = computed(() =>
   providerPresets.find((p) => p.id === (form.presetId ?? presetChoice.value)),
 )
+const isCustom = computed(() => !form.presetId)
+const selectableModels = computed(() => form.presetId ? (props.allowedPresetModels?.[form.presetId] ?? form.models) : form.models)
 
 const protocolOptions = computed(() => {
   const protocols = selectedPreset.value
@@ -124,6 +127,7 @@ function onPresetChange(value: string | null) {
   form.presetId = preset.id
   form.useProxy = preset.defaultUseProxy ?? false
   form.models = [...preset.suggestedModels]
+  if (isTenantMode.value) form.models = [...(props.allowedPresetModels?.[preset.id] ?? [])]
 }
 
 function onProtocolChange(protocol: ProviderProtocol) {
@@ -134,7 +138,7 @@ function onProtocolChange(protocol: ProviderProtocol) {
 }
 
 const formVisible = computed(() => isEditing.value || presetChoice.value !== null)
-const canTest = computed(() => !!form.baseUrl.trim() && !!form.apiKey.trim())
+const canTest = computed(() => !!form.baseUrl.trim() && (!!form.apiKey.trim() || !!form.hasCredential))
 
 const fetchedOptions = computed(() =>
   fetchedModels.value.filter((m) => !form.models.includes(m)).map((m) => ({ label: m, value: m })),
@@ -158,12 +162,16 @@ function addFetchedModel(model: string | null) {
 }
 
 function onSave() {
-  if (!form.name.trim() || !form.baseUrl.trim() || !form.apiKey.trim()) {
+  if (!form.name.trim() || !form.baseUrl.trim() || (!form.apiKey.trim() && !form.hasCredential)) {
     message.error('请填写名称、Base URL 和 API Key')
     return
   }
   if (!/^https?:\/\//.test(form.baseUrl.trim())) {
     message.error('Base URL 需以 http(s):// 开头')
+    return
+  }
+  if (form.presetId && props.allowedPresetModels && form.models.some((model) => !(props.allowedPresetModels?.[form.presetId!] ?? []).includes(model))) {
+    message.error('请选择平台为该服务商开放的模型')
     return
   }
   const saved: ProviderConfig = {
@@ -192,17 +200,17 @@ function onSave() {
         <n-select
           v-model:value="presetChoice"
           :options="presetOptions"
-          placeholder="选择服务商预设，或自定义"
+          placeholder="选择平台开放的服务商，或使用自由渠道"
           @update:value="onPresetChange"
         />
       </n-form-item>
       <template v-if="formVisible">
         <n-form-item label="名称">
-          <n-input v-model:value="form.name" placeholder="服务商显示名称" />
+          <n-input v-model:value="form.name" :disabled="isTenantMode && !isCustom" placeholder="服务商显示名称" />
         </n-form-item>
         <n-form-item label="协议">
           <n-space vertical size="small" style="width: 100%">
-            <n-radio-group v-model:value="form.protocol" @update:value="onProtocolChange">
+            <n-radio-group v-model:value="form.protocol" :disabled="isTenantMode && !isCustom" @update:value="onProtocolChange">
               <n-radio-button
                 v-for="option in protocolOptions"
                 :key="option.value"
@@ -230,7 +238,7 @@ function onSave() {
             </a>
           </n-space>
         </n-form-item>
-        <n-form-item label="连接方式">
+        <n-form-item v-if="!isTenantMode || isCustom" label="连接方式">
           <n-space vertical size="small" style="width: 100%">
             <n-radio-group v-model:value="form.useProxy">
               <n-radio-button :value="false">浏览器直连</n-radio-button>
@@ -242,21 +250,22 @@ function onSave() {
           </n-space>
         </n-form-item>
         <n-form-item label="Base URL">
-          <n-input v-model:value="form.baseUrl" placeholder="https://api.example.com/v1" />
+          <n-input v-model:value="form.baseUrl" :disabled="isTenantMode && !isCustom" placeholder="https://api.example.com/v1" />
         </n-form-item>
         <n-form-item label="API Key">
           <n-input
             v-model:value="form.apiKey"
             type="password"
             show-password-on="click"
-            placeholder="仅保存在本机浏览器中"
+            :placeholder="form.hasCredential ? '留空则继续使用已保存的密钥' : '请输入 API Key'"
           />
         </n-form-item>
         <n-form-item label="模型">
           <n-space vertical style="width: 100%">
-            <n-dynamic-tags v-model:value="form.models" />
+            <n-select v-if="isTenantMode && !isCustom" v-model:value="form.models" multiple filterable :options="selectableModels.map((model) => ({ label: model, value: model }))" placeholder="选择平台为该服务商开放的模型" />
+            <n-dynamic-tags v-else v-model:value="form.models" />
             <n-select
-              v-if="fetchedOptions.length"
+              v-if="fetchedOptions.length && (!isTenantMode || isCustom)"
               :value="null"
               :options="fetchedOptions"
               filterable

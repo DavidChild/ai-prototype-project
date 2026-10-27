@@ -1,26 +1,40 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
-import { useDialog, useMessage } from 'naive-ui'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
+import { useMessage } from 'naive-ui'
 import type { ProviderConfig } from '@/types/provider'
 import { useSettingsStore } from '@/stores/settings'
 import { testProvider } from '@/services/llm/factory'
-import { db } from '@/services/storage/db'
 import { estimateUsage } from '@/services/storage/repositories'
 import { formatBytes } from '@/utils/format'
 import ProviderCard from '@/components/settings/ProviderCard.vue'
 import ProviderForm from '@/components/settings/ProviderForm.vue'
 import ModelSelect from '@/components/settings/ModelSelect.vue'
+import LegacyMigrationDialog from '@/components/storage/LegacyMigrationDialog.vue'
+import { useAuthStore } from '@/stores/auth'
+import TenantAdminShell from '@/components/account/TenantAdminShell.vue'
 
-const router = useRouter()
 const message = useMessage()
-const dialog = useDialog()
+const route = useRoute()
 const settings = useSettingsStore()
+const auth = useAuthStore()
 
 const formShow = ref(false)
 const editingProvider = ref<ProviderConfig | null>(null)
 const testingId = ref<string | null>(null)
 const usageText = ref('')
+const migrationShow = ref(false)
+const showDataManagement = false
+const section = computed<'providers' | 'models' | 'parameters'>(() => {
+  if (route.path === '/settings/models') return 'models'
+  if (route.path === '/settings/parameters') return 'parameters'
+  return 'providers'
+})
+const pageMeta = computed(() => ({
+  providers: { title: '服务商', description: '配置团队可用的平台通道和自有 AI 服务商。' },
+  models: { title: '默认模型', description: '设置需求理解和页面生成默认使用的模型。' },
+  parameters: { title: '生成参数', description: '调整原型生成过程的并发、Token 和采样参数。' },
+}[section.value]))
 
 function openCreate() {
   editingProvider.value = null
@@ -32,20 +46,9 @@ function openEdit(provider: ProviderConfig) {
   formShow.value = true
 }
 
-function onSaved(provider: ProviderConfig) {
-  settings.upsertProvider(provider)
+async function onSaved(provider: ProviderConfig) {
+  await settings.upsertProvider(provider)
   message.success('已保存')
-  if (provider.apiKey && !settings.securityNoticeAcknowledged) {
-    dialog.warning({
-      title: '安全提示',
-      content:
-        'API Key 仅以明文保存在本机浏览器的 localStorage 中，不会上传到任何服务器。请勿在公用电脑上使用，也不要将本应用部署到公网供他人访问。',
-      positiveText: '我已知晓',
-      onPositiveClick: () => {
-        settings.securityNoticeAcknowledged = true
-      },
-    })
-  }
 }
 
 async function handleTest(provider: ProviderConfig) {
@@ -63,36 +66,25 @@ async function handleTest(provider: ProviderConfig) {
 async function refreshUsage() {
   const usage = await estimateUsage()
   usageText.value = usage
-    ? `已用 ${formatBytes(usage.usage)} / 配额约 ${formatBytes(usage.quota)}`
-    : '当前浏览器不支持容量查询'
+    ? usage.quota > 0
+      ? `已用 ${formatBytes(usage.usage)} / 配额约 ${formatBytes(usage.quota)}`
+      : `MySQL 已用 ${formatBytes(usage.usage)}`
+    : '数据库容量查询失败'
 }
 
-function confirmClearData() {
-  dialog.warning({
-    title: '清空全部项目数据',
-    content:
-      '将删除所有项目、页面、版本历史与文档资产（IndexedDB），服务商设置保留。此操作不可恢复，确定继续？',
-    positiveText: '清空',
-    negativeText: '取消',
-    onPositiveClick: async () => {
-      await db.delete()
-      message.success('已清空，页面即将刷新')
-      setTimeout(() => location.reload(), 600)
-    },
-  })
-}
-
-onMounted(refreshUsage)
+let selectionReady = false
+watch(() => settings.modelSelection, () => { if (selectionReady) void settings.saveModelSelection().then(() => message.success('默认模型已保存')).catch((error) => message.error((error as Error).message)) }, { deep: true })
+onMounted(async () => { await settings.loadTenantConfig(); selectionReady = true; if (showDataManagement) await refreshUsage() })
 </script>
 
 <template>
+  <TenantAdminShell active="settings" :title="pageMeta.title" :description="pageMeta.description">
   <div class="settings-page">
-    <n-page-header title="设置" @back="router.push('/')" />
-
+    <template v-if="section === 'providers'">
     <n-h3>服务商</n-h3>
     <n-alert type="info" :bordered="false" style="margin-bottom: 16px">
-      API Key 仅保存在本机浏览器中。服务商可选择浏览器直连或本地代理；直连被 CORS
-      拦截时，使用本地代理并以 npm run dev / preview 方式运行。
+      自有服务商配置归属当前企业或团队。平台通道由运营端开放，
+      使用平台通道产生的 Token 计入平台渠道；使用自有通道则计入企业自己的渠道。
     </n-alert>
     <n-grid :cols="2" :x-gap="12" :y-gap="12">
       <n-grid-item v-for="p in settings.providers" :key="p.id">
@@ -110,7 +102,9 @@ onMounted(refreshUsage)
         </n-button>
       </n-grid-item>
     </n-grid>
+    </template>
 
+    <template v-else-if="section === 'models'">
     <n-h3>默认模型</n-h3>
     <n-form label-placement="left" label-width="110">
       <n-form-item label="需求理解模型">
@@ -125,7 +119,9 @@ onMounted(refreshUsage)
         <ModelSelect v-model="settings.modelSelection.generation" />
       </n-form-item>
     </n-form>
+    </template>
 
+    <template v-else>
     <n-h3>生成参数</n-h3>
     <n-form label-placement="left" label-width="110">
       <n-form-item label="并发数">
@@ -176,24 +172,27 @@ onMounted(refreshUsage)
         />
       </n-form-item>
     </n-form>
+    </template>
 
-    <n-h3>数据管理</n-h3>
-    <n-space align="center">
-      <n-text depth="2">{{ usageText }}</n-text>
-      <n-button size="small" quaternary @click="refreshUsage">刷新</n-button>
-      <n-button size="small" type="error" secondary @click="confirmClearData">
-        清空全部项目数据
-      </n-button>
-    </n-space>
+    <template v-if="showDataManagement">
+      <n-h3>数据管理</n-h3>
+      <n-space align="center">
+        <n-text depth="2">{{ usageText }}</n-text>
+        <n-button size="small" quaternary @click="refreshUsage">刷新</n-button>
+        <n-button v-if="auth.isAdmin" size="small" type="primary" secondary @click="migrationShow = true">
+          迁移浏览器旧数据
+        </n-button>
+      </n-space>
+    </template>
 
-    <ProviderForm v-model:show="formShow" :provider="editingProvider" @saved="onSaved" />
+    <ProviderForm v-model:show="formShow" :provider="editingProvider" :allowed-models="settings.allowedModels" :allowed-preset-models="settings.allowedPresetModels" @saved="onSaved" />
+    <LegacyMigrationDialog v-if="showDataManagement" v-model:show="migrationShow" @completed="refreshUsage" />
   </div>
+  </TenantAdminShell>
 </template>
 
 <style scoped>
 .settings-page {
-  max-width: 880px;
-  margin: 0 auto;
-  padding: 24px;
+  max-width: 980px;
 }
 </style>

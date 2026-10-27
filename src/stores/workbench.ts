@@ -322,7 +322,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   function resolveGenerationModel() {
     const resolved = settings.resolveModel('generation', project.value?.modelOverride ?? undefined)
     if (!resolved) {
-      throw new LLMError('bad_request', '未配置「页面生成模型」，请先到设置页配置')
+      throw new LLMError('bad_request', '未配置「页面生成模型」，请先到模型设置配置')
     }
     return resolved
   }
@@ -739,6 +739,54 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     await loadVersions()
   }
 
+  async function createImportedPage(
+    name: string,
+    html: string,
+    parentSpecId?: string,
+  ): Promise<Page> {
+    const proj = project.value
+    if (!proj) throw new Error('项目尚未加载')
+    if (hierarchySaving.value) throw new Error('正在保存页面层级，请稍候')
+    const sequence = loadSequence
+    const id = nanoid()
+    const uniqueName = uniquePageName(
+      name,
+      pages.value.map((page) => page.spec.name),
+      proj.iteration ?? 'v1.0',
+    )
+    const created: Page = {
+      id,
+      projectId: proj.id,
+      spec: {
+        id,
+        name: uniqueName,
+        parentId: parentSpecId || undefined,
+        description: '',
+        blocks: [],
+      },
+      sortOrder: (pages.value.at(-1)?.sortOrder ?? 0) + 1,
+      genStatus: 'idle',
+      updatedAt: Date.now(),
+    }
+    await pageRepo.create(plainClone(created))
+    let version: PageVersion
+    try {
+      version = await versionRepo.initializeHtml(proj.id, id, html)
+    } catch (error) {
+      await pageRepo.remove(id).catch(() => {})
+      throw error
+    }
+    if (sequence !== loadSequence || project.value?.id !== proj.id) return created
+    created.currentVersionId = version.id
+    created.genStatus = 'done'
+    created.updatedAt = version.createdAt
+    pages.value.push(created)
+    htmlByPage.set(id, html)
+    selectedPageId.value = id
+    await loadVersions()
+    return created
+  }
+
   async function savePageAnnotations(pageId: string, input: AnnotationStore): Promise<void> {
     const page = pageOf(pageId)
     if (!page || page.projectId !== project.value?.id)
@@ -951,6 +999,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     renamePage,
     copyPage,
     importPageHtml,
+    createImportedPage,
     savePageAnnotations,
     addPage,
     removePage,

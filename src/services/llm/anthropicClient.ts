@@ -30,7 +30,7 @@ export class AnthropicClient implements LLMClient {
   private headers(): Record<string, string> {
     return {
       'content-type': 'application/json',
-      'x-api-key': this.provider.apiKey,
+      'x-api-key': this.provider.apiKey || 'managed',
       'anthropic-version': '2023-06-01',
       'anthropic-dangerous-direct-browser-access': 'true',
     }

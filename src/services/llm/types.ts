@@ -24,6 +24,9 @@ export function buildEndpoint(
   provider: ProviderConfig,
   path: string,
 ): { url: string; headers: Record<string, string> } {
+  if (provider.managed) {
+    return { url: `/api/ai/${encodeURIComponent(provider.id)}${path}`, headers: {} }
+  }
   if (!provider.useProxy) {
     return { url: joinUrl(provider.baseUrl, path), headers: {} }
   }

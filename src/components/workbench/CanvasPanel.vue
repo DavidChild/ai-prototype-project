@@ -6,13 +6,15 @@ import { ANNOTATION_DIRECTION_OPTIONS } from '@/services/annotations/annotationD
 import SandboxFrame from './SandboxFrame.vue'
 import StreamingCodePane from './StreamingCodePane.vue'
 import LayrrEditor from './LayrrEditor.vue'
+import { useAuthStore } from '@/stores/auth'
 
 const wb = useWorkbenchStore()
+const auth = useAuthStore()
 const dialog = useDialog()
 const message = useMessage()
 
 const zoom = ref<number | 'fit'>('fit')
-const previewMode = ref<'prototype' | 'annotations'>('annotations')
+const previewMode = ref<'prototype' | 'annotations'>('prototype')
 const aiPreviewUrl = ref('')
 const aiWorkspaceError = ref('')
 const sandboxFrameEl = ref<InstanceType<typeof SandboxFrame> | null>(null)
@@ -146,8 +148,9 @@ watch(previewMode, (mode) => {
       <span class="workspace-title">AI 工作区</span>
       <span class="page-title">{{ wb.selectedPage?.spec.name ?? '未选择页面' }}</span>
       <n-radio-group
+        v-if="!auth.isReviewer"
         v-model:value="previewMode"
-        size="tiny"
+        size="small"
         :disabled="!wb.selectedHtml || !!wb.selectedPage?.spec.groupOnly"
         aria-label="原型设计模式"
       >
@@ -159,6 +162,7 @@ watch(previewMode, (mode) => {
           </template>
         </n-radio-button>
       </n-radio-group>
+      <n-tag v-else size="small" :bordered="false">只读原型</n-tag>
       <n-select
         :value="zoom"
         :options="zoomOptions"
@@ -168,11 +172,11 @@ watch(previewMode, (mode) => {
       />
       <div style="flex: 1" />
       <LayrrEditor
-        v-if="previewMode === 'prototype'"
+        v-if="previewMode === 'prototype' && auth.canEdit"
         @preview="(url) => (aiPreviewUrl = url)"
         @error="(error) => (aiWorkspaceError = error)"
       />
-      <template v-if="wb.selectedPage && !wb.selectedPage.spec.groupOnly">
+      <template v-if="auth.canEdit && wb.selectedPage && !wb.selectedPage.spec.groupOnly">
         <n-button
           v-if="
             wb.selectedPage.genStatus === 'generating' || wb.selectedPage.genStatus === 'queued'
@@ -292,7 +296,7 @@ watch(previewMode, (mode) => {
         <div class="center">
           <n-result status="error" title="生成失败" :description="wb.selectedPage.errorMessage">
             <template #footer>
-              <n-button type="primary" @click="requestRegenerate">重试</n-button>
+              <n-button v-if="auth.canEdit" type="primary" @click="requestRegenerate">重试</n-button>
             </template>
           </n-result>
         </div>
@@ -334,7 +338,7 @@ watch(previewMode, (mode) => {
         <div class="center">
           <n-empty description="该页面还未生成">
             <template #extra>
-              <n-button type="primary" @click="wb.regenerateSelected()">立即生成</n-button>
+              <n-button v-if="auth.canEdit" type="primary" @click="wb.regenerateSelected()">立即生成</n-button>
             </template>
           </n-empty>
         </div>

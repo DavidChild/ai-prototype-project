@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import type { ProviderConfig } from '@/types/provider'
 import { corsHintLabels, providerProtocolLabels } from '@/data/providerPresets'
 
-const props = defineProps<{ provider: ProviderConfig; testing: boolean }>()
+const props = defineProps<{ provider: ProviderConfig; testing: boolean; manageable?: boolean }>()
 defineEmits<{
   (e: 'edit'): void
   (e: 'remove'): void
@@ -12,7 +12,7 @@ defineEmits<{
 
 const maskedKey = computed(() => {
   const key = props.provider.apiKey
-  if (!key) return '未填写 Key'
+  if (!key) return props.provider.hasCredential ? '密钥已安全保存' : '未填写 Key'
   if (key.length <= 8) return '••••'
   return `${key.slice(0, 4)}••••${key.slice(-4)}`
 })
@@ -30,6 +30,7 @@ const cors = computed(() => corsHintLabels[props.provider.corsHint])
         <n-tag size="small" :bordered="false">
           {{ providerProtocolLabels[provider.protocol] }}
         </n-tag>
+        <n-tag size="small" :bordered="false" :type="provider.source === 'platform' ? 'success' : 'info'">{{ provider.source === 'platform' ? '平台通道' : '自有通道' }}</n-tag>
         <n-tag v-if="provider.useProxy" size="small" :bordered="false" type="info">本地代理</n-tag>
         <n-tag v-else size="small" :bordered="false" :type="cors.type">{{ cors.label }}</n-tag>
       </n-space>
@@ -45,8 +46,8 @@ const cors = computed(() => corsHintLabels[props.provider.corsHint])
     <template #action>
       <n-space justify="end" size="small">
         <n-button size="small" quaternary :loading="testing" @click="$emit('test')">测试</n-button>
-        <n-button size="small" quaternary @click="$emit('edit')">编辑</n-button>
-        <n-popconfirm @positive-click="$emit('remove')">
+        <n-button v-if="provider.source !== 'platform' || manageable" size="small" quaternary @click="$emit('edit')">编辑</n-button>
+        <n-popconfirm v-if="provider.source !== 'platform' || manageable" @positive-click="$emit('remove')">
           <template #trigger>
             <n-button size="small" quaternary type="error">删除</n-button>
           </template>

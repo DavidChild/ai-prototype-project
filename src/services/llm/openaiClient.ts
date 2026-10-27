@@ -97,7 +97,7 @@ export class OpenAIClient implements LLMClient {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          authorization: `Bearer ${this.provider.apiKey}`,
+          authorization: `Bearer ${this.provider.apiKey || 'managed'}`,
           ...endpoint.headers,
         },
         body: JSON.stringify(body),
@@ -182,7 +182,7 @@ export class OpenAIClient implements LLMClient {
     let resp: Response
     try {
       resp = await fetch(endpoint.url, {
-        headers: { authorization: `Bearer ${this.provider.apiKey}`, ...endpoint.headers },
+        headers: { authorization: `Bearer ${this.provider.apiKey || 'managed'}`, ...endpoint.headers },
       })
     } catch (e) {
       throw classifyFetchError(e)

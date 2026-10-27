@@ -1,4 +1,4 @@
-import type { CorsHint, ProviderProtocol } from '@/types/provider'
+import type { CorsHint, ProviderProtocol } from '../types/provider'
 
 export interface ProviderPresetLinks {
   official?: string
