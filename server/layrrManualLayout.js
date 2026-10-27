@@ -108,6 +108,122 @@ export function siblingSwapTranslations(first, second) {
   return [translate(first, 1), translate(second, -1)]
 }
 
+export function childLayoutStyles(action, edgeMode = 'edge', childCount = 0) {
+  if (!['horizontal', 'center', 'left', 'right'].includes(action))
+    throw new Error('无效的子元素排列方式')
+  if (!['edge', 'inset'].includes(edgeMode)) throw new Error('无效的水平排列边缘方式')
+  if (action === 'horizontal' && edgeMode === 'inset') {
+    if (!Number.isInteger(childCount) || childCount < 2) throw new Error('两侧留白至少需要 2 个直接子元素')
+    return {
+      display: 'flex',
+      'flex-direction': 'row',
+      'flex-wrap': 'nowrap',
+      'justify-content': 'space-evenly',
+    }
+  }
+  const styles = {
+    display: 'flex',
+    'flex-direction': 'row',
+    'flex-wrap': 'nowrap',
+  }
+  if (action === 'horizontal') styles['justify-content'] = 'space-between'
+  else if (action === 'center') styles['align-items'] = 'center'
+  else styles['justify-content'] = action === 'left' ? 'flex-start' : 'flex-end'
+  return styles
+}
+
+export function applyChildLayout(container, action, edgeMode = 'edge', children = Array.from(container?.children || [])) {
+  if (!container?.style) throw new Error('请选择包含直接子元素的容器')
+  const styles = childLayoutStyles(action, edgeMode, children.length)
+  const inset = action === 'horizontal' && edgeMode === 'inset'
+  if (action !== 'center') {
+    for (const property of ['grid-template-columns', 'grid-auto-flow', 'column-gap', 'justify-items'])
+      container.style.removeProperty(property)
+    for (const child of children) {
+      child.style?.removeProperty?.('grid-column')
+      child.style?.removeProperty?.('justify-self')
+    }
+  }
+  // Vertical centering should not cancel an existing six-slot inset layout.
+  if (action === 'center' && container.style.getPropertyValue('display') === 'grid') {
+    delete styles.display
+    delete styles['flex-direction']
+    delete styles['flex-wrap']
+  }
+  for (const [property, value] of Object.entries(styles))
+    container.style.setProperty(property, value, 'important')
+  if (inset) children.forEach((child) => {
+    child.style?.removeProperty?.('grid-column')
+    child.style?.removeProperty?.('justify-self')
+  })
+}
+
+export function groupChildLayoutRows(items) {
+  const sorted = items.filter(({ rect }) => rect && [rect.top, rect.left, rect.width, rect.height].every(Number.isFinite) && rect.width > 0 && rect.height > 0)
+    .slice().sort((first, second) => first.rect.top - second.rect.top || first.rect.left - second.rect.left)
+  const rows = []
+  for (const item of sorted) {
+    const center = item.rect.top + item.rect.height / 2
+    let match = null, distance = Infinity
+    for (const row of rows) {
+      const current = Math.abs(center - row.center)
+      const tolerance = Math.max(8, Math.min(item.rect.height, row.height) * 0.45)
+      if (current <= tolerance && current < distance) {
+        match = row
+        distance = current
+      }
+    }
+    if (!match) {
+      match = { items: [], center, height: item.rect.height }
+      rows.push(match)
+    }
+    match.items.push(item)
+    match.center = match.items.reduce((sum, entry) => sum + entry.rect.top + entry.rect.height / 2, 0) / match.items.length
+    match.height = match.items.reduce((sum, entry) => sum + entry.rect.height, 0) / match.items.length
+  }
+  return rows.sort((first, second) => first.center - second.center)
+    .map((row) => row.items.sort((first, second) => first.rect.left - second.rect.left))
+}
+
+export function childRowLayoutOffsets(items, action, edgeMode, bounds) {
+  if (!['horizontal', 'center', 'left', 'right'].includes(action)) throw new Error('无效的子元素排列方式')
+  if (!['edge', 'inset'].includes(edgeMode)) throw new Error('无效的水平排列边缘方式')
+  if (!items.length) throw new Error('请选择需要排列的行')
+  if (action === 'horizontal' && items.length < 2) throw new Error('水平等距至少需要 2 个子元素')
+  if (!bounds || ![bounds.left, bounds.right].every(Number.isFinite) || bounds.right <= bounds.left)
+    throw new Error('无法读取容器可用宽度')
+  const ordered = items.slice().sort((first, second) => first.rect.left - second.rect.left)
+  if (action === 'center') {
+    const center = (Math.min(...ordered.map(({ rect }) => rect.top)) + Math.max(...ordered.map(({ rect }) => rect.bottom))) / 2
+    return ordered.map((item) => ({ item, dx: 0, dy: center - (item.rect.top + item.rect.height / 2) }))
+  }
+  if (action === 'left' || action === 'right') {
+    const edge = action === 'left'
+      ? Math.min(...ordered.map(({ rect }) => rect.left))
+      : Math.max(...ordered.map(({ rect }) => rect.right))
+    const delta = (action === 'left' ? bounds.left : bounds.right) - edge
+    return ordered.map((item) => ({ item, dx: delta, dy: 0 }))
+  }
+  if (edgeMode === 'inset') {
+    const totalWidth = ordered.reduce((sum, { rect }) => sum + rect.width, 0)
+    const gap = (bounds.right - bounds.left - totalWidth) / (ordered.length + 1)
+    let left = bounds.left + gap
+    return ordered.map((item) => {
+      const result = { item, dx: left - item.rect.left, dy: 0 }
+      left += item.rect.width + gap
+      return result
+    })
+  }
+  const totalWidth = ordered.reduce((sum, { rect }) => sum + rect.width, 0)
+  const gap = (bounds.right - bounds.left - totalWidth) / (ordered.length - 1)
+  let left = bounds.left
+  return ordered.map((item) => {
+    const result = { item, dx: left - item.rect.left, dy: 0 }
+    left += item.rect.width + gap
+    return result
+  })
+}
+
 // Keep the original transform/rotate/scale and percentage-based translation.
 // Individual CSS translate composes with them instead of replacing transform.
 export function dragTranslation(translate, dx, dy) {

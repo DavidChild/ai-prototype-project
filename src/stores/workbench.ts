@@ -22,6 +22,7 @@ import { movePageTree, pageTreeRows, type PageDropPosition } from '@/utils/pageT
 import { pageTypeLockReason } from '@/utils/pageEditing'
 import { uniquePageName } from '@/utils/pageName'
 import type { ImportedPagePromptContext } from '@/prompts/pageGeneration'
+import type { AnnotationStore } from 'web-remarq'
 
 export interface StreamState {
   text: string
@@ -738,6 +739,15 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     await loadVersions()
   }
 
+  async function savePageAnnotations(pageId: string, input: AnnotationStore): Promise<void> {
+    const page = pageOf(pageId)
+    if (!page || page.projectId !== project.value?.id)
+      throw new Error('页面已切换，请重新打开标注模式')
+    const store = await pageRepo.saveAnnotationStore(pageId, input)
+    const current = pageOf(pageId)
+    if (current) current.annotationStore = store
+  }
+
   async function updateSelectedSpec(spec: PageSpec): Promise<void> {
     const page = selectedPage.value
     if (!page) return
@@ -941,6 +951,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     renamePage,
     copyPage,
     importPageHtml,
+    savePageAnnotations,
     addPage,
     removePage,
     confirmPageReview,

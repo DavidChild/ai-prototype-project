@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { useMessage } from 'naive-ui'
+import { useDialog, useMessage } from 'naive-ui'
 import { useWorkbenchStore } from '@/stores/workbench'
 import { buildPagePng } from '@/services/export/screenshot'
 import { buildExportHtml } from '@/services/export/exportHtml'
@@ -17,9 +17,14 @@ import { sanitizeFileName } from '@/utils/download'
 import { searchPageTreeRows } from '@/utils/pageTree'
 import type { Page } from '@/types/page'
 import type { Project } from '@/types/project'
+import {
+  buildRemarqExportHtml,
+  remarqExportStorageKey,
+} from '@/services/annotations/remarqDocument'
 
 const wb = useWorkbenchStore()
 const message = useMessage()
+const dialog = useDialog()
 const exporting = ref(false)
 const directoryName = ref('')
 let directorySequence = 0
@@ -157,12 +162,13 @@ async function writeHierarchicalHtml(
   project: Project,
   progressLabel: string,
   updateProgress: (content: string) => void,
+  includeAnnotations: boolean,
 ) {
   const entries: { page: Page; path: string[] }[] = []
   for (let index = 0; index < pages.length; index++) {
     const page = pages[index]!
     updateProgress(`${progressLabel} ${index + 1}/${pages.length} 页`)
-    const html = await buildExportHtml(wb.htmlByPage.get(page.id)!, project.platform, true)
+    const html = await buildPageExportHtml(page, project, includeAnnotations)
     const path = pageFilePath(page, 'html', true)
     await writeExportFile(directory, path, html)
     entries.push({ page, path })
@@ -172,11 +178,34 @@ async function writeHierarchicalHtml(
   await writeExportFile(directory, ['proto_index.html'], indexHtml)
 }
 
-async function handle(key: string | number) {
-  if (key === 'choose-directory') {
-    await chooseDirectory()
-    return
-  }
+async function buildPageExportHtml(
+  page: Page,
+  project: Project,
+  includeAnnotations: boolean,
+): Promise<string> {
+  const html = await buildExportHtml(wb.htmlByPage.get(page.id)!, project.platform, true)
+  return includeAnnotations
+    ? buildRemarqExportHtml(html, page.annotationStore, {
+        storageKey: remarqExportStorageKey(project.id, page.id, page.annotationStore),
+        theme: project.styleSpec.tokens.colorMode,
+      })
+    : html
+}
+
+function handle(key: string | number) {
+  if (key === 'choose-directory') return void chooseDirectory()
+  if (exporting.value) return
+  dialog.info({
+    title: '是否携带原型标注？',
+    content: '带标注导出会内嵌 web-remarq 标注、标记点和查看工具；不带标注则只导出原型页面。',
+    positiveText: '带标注导出',
+    negativeText: '不带标注导出',
+    onPositiveClick: () => performExport(key, true),
+    onNegativeClick: () => performExport(key, false),
+  })
+}
+
+async function performExport(key: string | number, includeAnnotations: boolean) {
   const project = wb.project
   if (!project || exporting.value) return
   const selectedPages = [...effectiveSelectedPages.value]
@@ -196,14 +225,17 @@ async function handle(key: string | number) {
       for (let index = 0; index < selectedPages.length; index++) {
         const page = selectedPages[index]!
         loading.content = `正在导出已选 PNG… ${index + 1}/${selectedPages.length} 页`
-        const blob = await buildPagePng(wb.htmlByPage.get(page.id)!, project.platform, background)
+        const source = includeAnnotations
+          ? await buildPageExportHtml(page, project, true)
+          : wb.htmlByPage.get(page.id)!
+        const blob = await buildPagePng(source, project.platform, background)
         await writeExportFile(directory, [flatPageFileName(page, 'png', selectedPages)], blob)
       }
     } else if (key === 'selected-html-flat' && selectedPages.length) {
       for (let index = 0; index < selectedPages.length; index++) {
         const page = selectedPages[index]!
         loading.content = `正在导出已选 HTML… ${index + 1}/${selectedPages.length} 页`
-        const html = await buildExportHtml(wb.htmlByPage.get(page.id)!, project.platform, true)
+        const html = await buildPageExportHtml(page, project, includeAnnotations)
         await writeExportFile(directory, [flatPageFileName(page, 'html', selectedPages)], html)
       }
     } else if (key === 'selected-html-tree' && selectedPages.length) {
@@ -213,11 +245,19 @@ async function handle(key: string | number) {
         project,
         '正在按层级导出…',
         updateProgress,
+        includeAnnotations,
       )
     } else if (key === 'search-html-tree') {
       const pages = [...searchedPages.value]
       if (!wb.pageSearchQuery.trim() || !pages.length) throw new Error('当前搜索没有可导出的页面')
-      await writeHierarchicalHtml(directory, pages, project, '正在导出搜索结果…', updateProgress)
+      await writeHierarchicalHtml(
+        directory,
+        pages,
+        project,
+        '正在导出搜索结果…',
+        updateProgress,
+        includeAnnotations,
+      )
     } else if (key === 'project-zip') {
       const nameBySpecId = new Map(wb.pages.map((page) => [page.spec.id, page.spec.name]))
       const items = wb.pages
@@ -231,6 +271,7 @@ async function handle(key: string | number) {
         }))
       const blob = await buildProjectZip(project, items, {
         inlineTailwind: true,
+        includeAnnotations,
         onProgress: (done, total) => {
           if (loading) loading.content = `正在导出项目… ${done}/${total} 页`
         },

@@ -1,4 +1,5 @@
 import type { PageSpec } from './analysis'
+import type { AnnotationStore } from 'web-remarq'
 
 export type PageGenStatus = 'idle' | 'queued' | 'generating' | 'done' | 'failed'
 
@@ -12,6 +13,8 @@ export interface Page {
   currentVersionId?: string
   /** AI-produced version has not yet been acknowledged from the page menu. */
   reviewPending?: boolean
+  /** Visual review annotations stored separately from the prototype HTML. */
+  annotationStore?: AnnotationStore
   updatedAt: number
 }
 

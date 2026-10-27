@@ -5,6 +5,7 @@ import type { Page, PageVersion, PageVersionSource } from '@/types/page'
 import { movePageTree } from '@/utils/pageTree'
 import type { GenerationConstraint } from '@/types/generationConstraint'
 import { validateConstraint } from '@/prompts/generationConstraints'
+import { validateStore, type AnnotationStore } from 'web-remarq/core'
 
 const MAX_VERSIONS_PER_PAGE = 20
 
@@ -342,6 +343,16 @@ export const pageRepo = {
 
   async update(id: string, patch: Partial<Omit<Page, 'id'>>): Promise<void> {
     await db.pages.update(id, { ...patch, updatedAt: Date.now() })
+  },
+
+  async saveAnnotationStore(id: string, input: AnnotationStore): Promise<AnnotationStore> {
+    const result = validateStore(input)
+    if (!result.ok) throw new Error(`标注数据无效：${result.errors[0] ?? '格式错误'}`)
+    const page = await db.pages.get(id)
+    if (!page) throw new Error('页面不存在，请刷新后重试')
+    const store = structuredClone(result.store)
+    await db.pages.update(id, { annotationStore: store })
+    return store
   },
 
   async remove(id: string): Promise<void> {

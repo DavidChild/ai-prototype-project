@@ -55,6 +55,11 @@ test('manual editing and undo/redo preserve the iframe document and source chang
     #swapColumn{display:flex;flex-direction:column;gap:10px;margin-top:30px}
     #swapColumn>div{width:80px;height:30px;background:#ddd}
     #swapInline{margin-top:30px}
+    #layoutChildren{width:360px;height:120px;margin-top:30px;padding:10px 20px;border:1px solid #bbb}
+    #layoutChildren>span{display:block;width:40px;height:24px;background:#dbeafe}
+    #multiRowChildren{display:grid;grid-template-columns:repeat(3,50px);grid-template-rows:repeat(2,30px);gap:12px 20px;width:300px;padding:10px;margin-top:30px;border:1px solid #bbb}
+    #multiRowChildren>span{display:block;width:40px;height:20px;background:#dcfce7}
+    #wrappedRows{width:300px;padding:10px;margin-top:30px;border:1px solid #bbb}#wrappedRows ul{display:flex;width:100%;padding:0;margin:0 0 12px;list-style:none}#wrappedRows li{width:40px;height:20px;background:#fef3c7}
     </style></head><body><a id="firstLink" href="manual" onclick="parent.prototypeClicks=(parent.prototypeClicks||0)+1">First drag link</a>
     <div id="box">Original text</div><section id="target">Target</section>
     <svg id="icon" width="40" height="40"><title>Logo</title><circle r="10" cx="20" cy="20"/></svg>
@@ -71,6 +76,9 @@ test('manual editing and undo/redo preserve the iframe document and source chang
     <section id="swapRow"><div id="swapRowA">A</div><div id="swapRowB">B</div><div id="swapRowC">C</div><div id="swapRowD">D</div></section>
     <section id="swapColumn"><div id="swapColumnA">A</div><div id="swapColumnB">B</div><div id="swapColumnC">C</div></section>
     <section id="swapInline"><a id="swapInlineA" href="#">Alpha</a> <a id="swapInlineB" href="#">Beta</a> <a id="swapInlineC" href="#">Gamma</a></section>
+    <section id="layoutChildren"><span id="layoutA">A</span><span id="layoutB">B</span><span id="layoutC">C</span></section>
+    <section id="multiRowChildren"><span id="multiA">A</span><span id="multiB">B</span><span id="multiC">C</span><span id="multiD">D</span><span id="multiE">E</span><span id="multiF">F</span></section>
+    <section id="wrappedRows"><ul id="wrappedFirst"><li id="wrappedA">A</li><li id="wrappedB">B</li><li id="wrappedC">C</li></ul><ul id="wrappedSecond"><li id="wrappedD">D</li><li id="wrappedE">E</li></ul></section>
     <script>parent.prototypeBoots=(parent.prototypeBoots||0)+1;
     window.runtimeState={value:123};document.body.dataset.runtime='retained';
     const link=document.getElementById('firstLink');
@@ -116,6 +124,12 @@ test('manual editing and undo/redo preserve the iframe document and source chang
     await page.mouse.up()
     await page.waitForFunction(() => !document.querySelector('#dragMode').disabled)
   }
+  await canvas.locator('#gridParent').click({ position: { x: 250, y: 120 } })
+  assert.equal(await page.locator('#layoutHorizontal').isDisabled(), true)
+  assert.equal(await page.locator('[name="childEdgeMode"][value="edge"]').isEnabled(), true)
+  assert.equal(await page.locator('[name="childEdgeMode"][value="inset"]').isEnabled(), true)
+  await page.locator('[name="childEdgeMode"][value="inset"]').check()
+  await page.locator('[name="childEdgeMode"][value="edge"]').check()
   async function undo() { await page.locator('#undo').click(); await checkStable() }
   async function redo() { await page.locator('#redo').click(); await checkStable() }
   async function documentRect(locator) {
@@ -303,6 +317,49 @@ test('manual editing and undo/redo preserve the iframe document and source chang
   await swapAndRestore('swapColumnA', 'swapColumnC', 'down', 2, 'swapColumnB')
   await swapAndRestore('swapColumnC', 'swapColumnA', 'up', 2, 'swapColumnB')
   await swapAndRestore('swapInlineA', 'swapInlineC', 'right', 2, 'swapInlineB')
+  await canvas.locator('#layoutChildren').click({ position: { x: 8, y: 8 } })
+  assert.equal(await page.locator('#layoutHorizontal').isEnabled(), true)
+  await page.locator('#layoutHorizontal').click()
+  assert.equal(await canvas.locator('#layoutChildren').evaluate((element) => getComputedStyle(element).justifyContent), 'space-between')
+  assert.equal(await canvas.locator('#layoutA').evaluate((element) => Math.round(element.getBoundingClientRect().left - element.parentElement.getBoundingClientRect().left)), 20)
+  await page.locator('[name="childEdgeMode"][value="inset"]').check()
+  assert.equal(await canvas.locator('#layoutChildren').evaluate((element) => getComputedStyle(element).display), 'flex')
+  assert.equal(await canvas.locator('#layoutChildren').evaluate((element) => getComputedStyle(element).justifyContent), 'space-evenly')
+  const equalGaps = await canvas.locator('#layoutChildren').evaluate((element) => {
+    const parent = element.getBoundingClientRect(), children = Array.from(element.children).map((child) => child.getBoundingClientRect())
+    const style = getComputedStyle(element)
+    const left = parent.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft)
+    const right = parent.right - parseFloat(style.borderRightWidth) - parseFloat(style.paddingRight)
+    return [children[0].left - left, children[1].left - children[0].right, children[2].left - children[1].right, right - children[2].right]
+  })
+  assert.ok(Math.max(...equalGaps) - Math.min(...equalGaps) < 1)
+  await page.locator('#layoutCenter').click()
+  assert.equal(await canvas.locator('#layoutChildren').evaluate((element) => getComputedStyle(element).alignItems), 'center')
+  await page.locator('#layoutRight').click()
+  assert.equal(await canvas.locator('#layoutChildren').evaluate((element) => getComputedStyle(element).justifyContent), 'flex-end')
+  await undo()
+  assert.equal(await canvas.locator('#layoutChildren').evaluate((element) => getComputedStyle(element).justifyContent), 'space-evenly')
+  await page.locator('#layoutLeft').click()
+  assert.equal(await canvas.locator('#layoutChildren').evaluate((element) => getComputedStyle(element).justifyContent), 'flex-start')
+  await canvas.locator('#multiRowChildren').click({ position: { x: 290, y: 75 } })
+  assert.equal(await page.locator('#childLayoutRowPicker').isVisible(), true)
+  assert.equal(await page.locator('#childLayoutRow option').count(), 3)
+  assert.equal(await page.locator('#layoutHorizontal').isDisabled(), true)
+  const firstRowBefore = await canvas.locator('#multiA').evaluate((element) => element.getBoundingClientRect().left)
+  const secondRowBefore = await canvas.locator('#multiD').evaluate((element) => element.getBoundingClientRect().left)
+  await page.locator('#childLayoutRow').selectOption('1')
+  assert.equal(await page.locator('#layoutHorizontal').isEnabled(), true)
+  await page.locator('[name="childEdgeMode"][value="edge"]').check()
+  await page.locator('#layoutHorizontal').click()
+  assert.equal(await canvas.locator('#multiA').evaluate((element) => element.getBoundingClientRect().left), firstRowBefore)
+  assert.notEqual(await canvas.locator('#multiD').evaluate((element) => element.getBoundingClientRect().left), secondRowBefore)
+  await canvas.locator('#wrappedRows').click({ position: { x: 290, y: 70 } })
+  assert.equal(await page.locator('#childLayoutRow option').count(), 3)
+  assert.match(await page.locator('#childLayoutRow option').nth(1).textContent(), /3 个元素（已进入包裹层）/)
+  await page.locator('#childLayoutRow').selectOption('0')
+  assert.equal(await page.locator('#layoutHorizontal').isEnabled(), true)
+  await page.locator('#layoutHorizontal').click()
+  assert.equal(await canvas.locator('#wrappedFirst').evaluate((element) => getComputedStyle(element).justifyContent), 'space-between')
   await canvas.locator('#swapRowB').click({ position: { x: 12, y: 12 } })
   await page.locator('#swapSteps').fill('99')
   await page.locator('#swapSteps').press('Enter')

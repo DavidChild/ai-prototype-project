@@ -3,6 +3,10 @@ import type { Page } from '@/types/page'
 import type { Project } from '@/types/project'
 import { downloadBlob, sanitizeFileName } from '@/utils/download'
 import { buildExportHtml } from './exportHtml'
+import {
+  buildRemarqExportHtml,
+  remarqExportStorageKey,
+} from '@/services/annotations/remarqDocument'
 
 interface IndexEntry {
   file: string
@@ -65,7 +69,11 @@ export async function exportProjectZip(
 export async function buildProjectZip(
   project: Project,
   items: { page: Page; html: string; groupName: string }[],
-  opts: { inlineTailwind: boolean; onProgress?: (done: number, total: number) => void },
+  opts: {
+    inlineTailwind: boolean
+    includeAnnotations?: boolean
+    onProgress?: (done: number, total: number) => void
+  },
 ): Promise<Blob> {
   const zip = new JSZip()
   const used = new Set<string>()
@@ -76,7 +84,13 @@ export async function buildProjectZip(
     let file = `${base}.html`
     for (let i = 2; used.has(file); i++) file = `${base}-${i}.html`
     used.add(file)
-    const out = await buildExportHtml(html, project.platform, opts.inlineTailwind)
+    const baseHtml = await buildExportHtml(html, project.platform, opts.inlineTailwind)
+    const out = opts.includeAnnotations
+      ? buildRemarqExportHtml(baseHtml, page.annotationStore, {
+          storageKey: remarqExportStorageKey(project.id, page.id, page.annotationStore),
+          theme: project.styleSpec.tokens.colorMode,
+        })
+      : baseHtml
     zip.file(`pages/${file}`, out)
     entries.push({
       file: `pages/${file}`,

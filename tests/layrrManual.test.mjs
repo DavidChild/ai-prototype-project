@@ -15,6 +15,10 @@ import {
   directionalSibling,
   nthDirectionalSibling,
   siblingSwapTranslations,
+  childLayoutStyles,
+  applyChildLayout,
+  groupChildLayoutRows,
+  childRowLayoutOffsets,
   resizeBox,
 } from '../server/layrrManualLayout.js'
 
@@ -26,7 +30,7 @@ test('manual inspector separates position controls and element attributes into a
   const position = shell.match(/<section id="positionPanel"[^>]*>([\s\S]*?)<\/section>/)?.[1]
   const attributes = shell.slice(shell.indexOf('<section id="attributesPanel"'), shell.indexOf('</aside>'))
   assert.ok(position)
-  for (const id of ['parent', 'child', 'siblingLeft', 'swapSteps', 'swapRight', 'children', 'duplicate', 'delete'])
+  for (const id of ['parent', 'child', 'siblingLeft', 'swapSteps', 'swapRight', 'children', 'layoutHorizontal', 'layoutCenter', 'layoutLeft', 'layoutRight', 'duplicate', 'delete'])
     assert.ok(position.includes(`id="${id}"`))
   for (const id of ['text', 'applyText', 'imageEditor', 'imageFile', 'imageUrl', 'color', 'width', 'height', 'padding', 'margin']) {
     assert.ok(attributes.includes(`id="${id}"`))
@@ -34,6 +38,48 @@ test('manual inspector separates position controls and element attributes into a
   }
   assert.match(attributes, /^<section[^>]*role="tabpanel"[^>]*aria-labelledby="attributesTab" hidden>/)
   assert.match(shell, /\.editor-panel\[hidden\]\{display:none\}/)
+})
+
+test('child layout maps alignment actions to flex styles and edge strategies', () => {
+  assert.deepEqual(childLayoutStyles('horizontal', 'edge'), {
+    display: 'flex', 'flex-direction': 'row', 'flex-wrap': 'nowrap', 'justify-content': 'space-between',
+  })
+  assert.deepEqual(childLayoutStyles('horizontal', 'inset', 4), {
+    display: 'flex', 'flex-direction': 'row', 'flex-wrap': 'nowrap', 'justify-content': 'space-evenly',
+  })
+  assert.equal(childLayoutStyles('center')['align-items'], 'center')
+  assert.equal(childLayoutStyles('left')['justify-content'], 'flex-start')
+  assert.equal(childLayoutStyles('right')['justify-content'], 'flex-end')
+  assert.throws(() => childLayoutStyles('diagonal'), /无效/)
+  assert.throws(() => childLayoutStyles('horizontal', 'outside'), /无效/)
+
+  const values = new Map()
+  const children = Array.from({ length: 4 }, () => ({
+    style: { setProperty: (name, value, priority) => values.set(`${name}:${value}`, priority) },
+  }))
+  applyChildLayout({
+    children,
+    style: {
+      getPropertyValue: () => '',
+      removeProperty: () => {},
+      setProperty: (name, value, priority) => values.set(name, [value, priority]),
+    },
+  }, 'horizontal', 'inset', children)
+  assert.deepEqual(values.get('justify-content'), ['space-evenly', 'important'])
+  assert.deepEqual(values.get('display'), ['flex', 'important'])
+})
+
+test('multi-row child layout requires an explicit row and calculates only that row offsets', () => {
+  const item = (id, left, top, width = 40, height = 20) => ({ id, rect: { left, top, right: left + width, bottom: top + height, width, height } })
+  const rows = groupChildLayoutRows([
+    item('b2', 90, 70), item('a1', 10, 20), item('b1', 20, 70), item('a2', 80, 20),
+  ])
+  assert.deepEqual(rows.map((row) => row.map(({ id }) => id)), [['a1', 'a2'], ['b1', 'b2']])
+  const edge = childRowLayoutOffsets(rows[1], 'horizontal', 'edge', { left: 0, right: 200 })
+  assert.deepEqual(edge.map(({ item, dx, dy }) => [item.id, dx, dy]), [['b1', -20, 0], ['b2', 70, 0]])
+  const inset = childRowLayoutOffsets(rows[1], 'horizontal', 'inset', { left: 0, right: 200 })
+  assert.deepEqual(inset.map(({ item, dx }) => [item.id, dx]), [['b1', 20], ['b2', 30]])
+  assert.throws(() => childRowLayoutOffsets([], 'horizontal', 'edge', { left: 0, right: 200 }), /选择/)
 })
 
 test('sibling selection follows visual directions instead of DOM order', () => {

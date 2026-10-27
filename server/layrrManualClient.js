@@ -1,7 +1,7 @@
 // Served only inside the isolated local workspace, never stored in prototype HTML.
 import { textSelection } from './manual-text.js'
 import { imageTarget, imageUrl, validateImageFile, replaceImage } from './manual-image.js'
-import { moveModule, keyboardCommand, dragTranslation, applyFreeDrag, resizeBox, applyElementSize, applyElementDimension, normalizeGridStep, automaticGridStep, nthDirectionalSibling, siblingSwapTranslations } from './manual-layout.js'
+import { moveModule, keyboardCommand, dragTranslation, applyFreeDrag, resizeBox, applyElementSize, applyElementDimension, normalizeGridStep, automaticGridStep, nthDirectionalSibling, siblingSwapTranslations, applyChildLayout, groupChildLayoutRows, childRowLayoutOffsets } from './manual-layout.js'
 import { recordDomChanges, applyDomChanges } from './manual-history.js'
 const base = location.pathname.slice(0, location.pathname.lastIndexOf('manual'))
 const $ = (id) => document.getElementById(id)
@@ -53,6 +53,7 @@ let imageRequest = 0,
   imagePending = false
 let pendingSubmission = null
 let retrySubmission = null
+let childLayoutRowSignature = ''
 function keyFor(node) {
   return node && nodeKeys.get(node)
 }
@@ -220,6 +221,106 @@ function updateSiblingButtons() {
     button.disabled = locked || !siblingKey(button.dataset.swap, swapCount(), context)
   })
 }
+function childLayoutItems(container) {
+  return Array.from(container.children).filter(selectable).map((node) => {
+    const live = liveNodes.get(node)
+    if (!live?.isConnected) return null
+    const style = frame.contentWindow.getComputedStyle(live)
+    if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return null
+    return { node, live, key: keyFor(node), rect: live.getBoundingClientRect() }
+  }).filter(Boolean)
+}
+function childLayoutRows() {
+  if (!selected || !ready) return []
+  const rows = []
+  for (const items of groupChildLayoutRows(childLayoutItems(selected))) {
+    // A common prototype structure is container > ul/div > li/items. Treat a
+    // single visual wrapper as the row container instead of asking the user
+    // to distribute that one wrapper. This keeps the row choice meaningful.
+    if (items.length === 1) {
+      const wrapper = items[0].node
+      const nested = childLayoutItems(wrapper)
+      if (nested.length >= 2) {
+        for (const nestedRow of groupChildLayoutRows(nested))
+          rows.push({ items: nestedRow, container: wrapper, wrapped: true })
+        continue
+      }
+    }
+    rows.push({ items, container: selected, wrapped: false })
+  }
+  return rows
+}
+function selectedChildLayoutRow(rows) {
+  if (rows.length <= 1) return rows[0] || null
+  const index = Number($('childLayoutRow').value)
+  return Number.isInteger(index) && index >= 0 && index < rows.length ? rows[index] : null
+}
+function updateChildLayoutRowPicker(rows) {
+  const picker = $('childLayoutRowPicker'), select = $('childLayoutRow')
+  picker.hidden = rows.length <= 1
+  if (rows.length <= 1) {
+    childLayoutRowSignature = ''
+    select.replaceChildren()
+    return
+  }
+  const signature = selectedKey + ':' + rows.map((row) => row.items.map(({ key }) => key).join(',')).join('|')
+  if (signature === childLayoutRowSignature) return
+  childLayoutRowSignature = signature
+  const placeholder = document.createElement('option')
+  placeholder.value = ''
+  placeholder.textContent = '请选择需要调整的行…'
+  select.replaceChildren(placeholder)
+  rows.forEach(({ items, wrapped }, index) => {
+    const option = document.createElement('option')
+    option.value = String(index)
+    const names = items.slice(0, 3).map(({ node }) => node.id ? '#' + node.id : node.tagName.toLowerCase()).join('、')
+    option.textContent = `第 ${index + 1} 行 · ${items.length} 个元素${wrapped ? '（已进入包裹层）' : ''}${names ? ` · ${names}${items.length > 3 ? '…' : ''}` : ''}`
+    select.append(option)
+  })
+}
+function updateChildLayoutControls() {
+  const rows = childLayoutRows()
+  updateChildLayoutRowPicker(rows)
+  const row = selectedChildLayoutRow(rows)
+  const children = row?.items || []
+  const locked = busy || !!gesture || !ready
+  document.querySelectorAll('[data-child-layout]').forEach((button) => {
+    button.disabled = locked || !children.length || button.dataset.childLayout === 'horizontal' && children.length < 2
+  })
+  document.querySelectorAll('[name="childEdgeMode"]').forEach((input) => {
+    // Keep the layout preference editable even when the current container
+    // cannot run horizontal distribution. The button itself communicates
+    // whether the selected container has enough direct children.
+    input.disabled = locked
+  })
+  $('childLayoutRow').disabled = locked || rows.length <= 1
+  const total = rows.reduce((count, row) => count + row.items.length, 0)
+  $('childLayoutHint').textContent = rows.length > 1 && !children.length
+    ? `检测到 ${rows.length} 行、共 ${total} 个直接子元素，请先手动选择需要调整的行。`
+    : children.length
+      ? `${rows.length > 1 ? `已选择第 ${Number($('childLayoutRow').value) + 1} 行，` : '当前容器'}包含 ${children.length} 个可排列元素${row?.wrapped ? '（已自动进入包裹层）' : ''}${children.length < 2 ? '；水平等距至少需要 2 个' : ''}。`
+      : '请选择包含直接子元素的容器。'
+}
+function childLayoutContentBounds(container = selected) {
+  const live = liveNodes.get(container)
+  if (!live?.isConnected) throw new Error('容器已改变，请重新选择')
+  const rect = live.getBoundingClientRect(), style = frame.contentWindow.getComputedStyle(live)
+  const number = (name) => Number.parseFloat(style.getPropertyValue(name)) || 0
+  return {
+    left: rect.left + number('border-left-width') + number('padding-left'),
+    right: rect.right - number('border-right-width') - number('padding-right'),
+  }
+}
+function applyChildLayoutRow(row, action, edgeMode) {
+  const planned = childRowLayoutOffsets(row.items, action, edgeMode, childLayoutContentBounds(row.container)).map(({ item, dx, dy }) => {
+    const state = elementPositionState(item.live), { inverse } = state
+    return {
+      node: item.node, inline: state.inline,
+      value: dragTranslation(state.translate, inverse.a * dx + inverse.c * dy, inverse.b * dx + inverse.d * dy),
+    }
+  })
+  return commit(() => planned.forEach(({ node, value, inline }) => applyFreeDrag(node, value, inline)), selectedKey)
+}
 function status(message, error = false) {
   $('status').textContent = message
   $('status').dataset.error = String(error)
@@ -237,6 +338,7 @@ function update() {
   $('gridSize').disabled = locked || !ready || $('dragMode').value !== 'grid'
   $('gridAuto').disabled = $('gridSize').disabled
   updateSiblingButtons()
+  updateChildLayoutControls()
   updateAttributeScope()
   $('undo').disabled = locked || position <= 0
   $('redo').disabled = locked || position >= history.length - 1
@@ -308,6 +410,7 @@ function select(key) {
   if (!live) return
   syncGridStep(live)
   updateSiblingButtons()
+  updateChildLayoutControls()
   updateAttributeScope()
   const style = frame.contentWindow.getComputedStyle(live)
   $('props').hidden = false
@@ -1057,6 +1160,67 @@ document.querySelectorAll('[data-swap]').forEach((button) => {
     } catch (error) { status(error.message, true) }
   }
 })
+function runChildLayout(action) {
+    if (!ready || busy || gesture || !selected) return false
+    const rows = childLayoutRows()
+    const row = selectedChildLayoutRow(rows)
+    const children = row?.items.map(({ node }) => node) || []
+    if (!children.length || action === 'horizontal' && children.length < 2) {
+      updateChildLayoutControls()
+      status(rows.length > 1 && !children.length
+        ? '检测到多行子元素，请先选择需要调整的行'
+        : action === 'horizontal' ? '水平等距至少需要 2 个直接子元素' : '当前元素没有可排列的直接子元素', true)
+      return false
+    }
+    const edgeMode = document.querySelector('[name="childEdgeMode"]:checked')?.value || 'edge'
+    try {
+      const changed = rows.length > 1
+        ? applyChildLayoutRow(row, action, edgeMode)
+        : commit(() => applyChildLayout(row.container, action, edgeMode, children), selectedKey)
+      if (!changed) {
+        status('当前排列方式已经生效')
+        return false
+      }
+      const label = {
+        horizontal: edgeMode === 'edge' ? '水平等距排列（首尾贴边）' : '水平等距排列（两侧留白）',
+        center: '上下居中排列',
+        left: '左对齐排列',
+        right: '右对齐排列',
+      }[action]
+      const spacing = action === 'horizontal' && edgeMode === 'inset'
+        ? '，左右留白与每个元素之间的空白保持相等'
+        : '，边距和间距由容器自动计算'
+      const rowLabel = rows.length > 1 ? `第 ${Number($('childLayoutRow').value) + 1} 行` : '子元素'
+      status(`已对${rowLabel}应用${label}${spacing}，其他行保持不变，尚未写入AI工作区`)
+      return true
+    } catch (error) {
+      status(error.message, true)
+      return false
+    }
+}
+document.querySelectorAll('[data-child-layout]').forEach((button) => {
+  button.onclick = () => {
+    runChildLayout(button.dataset.childLayout)
+  }
+})
+document.querySelectorAll('[name="childEdgeMode"]').forEach((input) => {
+  input.onclick = () => {
+    if (!ready || busy || gesture || input.disabled) return
+    if ($('layoutHorizontal').disabled) {
+      const rows = childLayoutRows()
+      status(rows.length > 1 && !selectedChildLayoutRow(rows)
+        ? '已切换边缘方式；请先选择需要水平排列的行'
+        : '已切换边缘方式；当前行至少需要 2 个元素才能水平排列')
+      return
+    }
+    runChildLayout('horizontal')
+  }
+})
+$('childLayoutRow').onchange = () => {
+  updateChildLayoutControls()
+  if ($('childLayoutRow').value !== '')
+    status(`已选择第 ${Number($('childLayoutRow').value) + 1} 行，请选择排列方式`)
+}
 $('child').onclick = () => {
   const options = $('children').options
   if (options.length === 2) {
