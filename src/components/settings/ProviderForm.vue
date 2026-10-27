@@ -94,7 +94,7 @@ watch(
     fetchedModels.value = []
     Object.assign(
       form,
-      props.provider ?? {
+      {
         id: '',
         name: '',
         protocol: 'openai',
@@ -104,7 +104,11 @@ watch(
         presetId: undefined,
         corsHint: 'unknown',
         useProxy: false,
+        managed: false,
+        source: undefined,
+        hasCredential: false,
       },
+      props.provider ?? {},
     )
     form.useProxy = props.provider?.useProxy ?? false
     form.models = [...form.models]
@@ -147,7 +151,13 @@ const fetchedOptions = computed(() =>
 async function onTest() {
   testing.value = true
   try {
-    const { models } = await testProvider({ ...form, models: [...form.models] })
+    const apiKey = form.apiKey.trim()
+    const { models } = await testProvider({
+      ...form,
+      apiKey,
+      models: [...form.models],
+      managed: apiKey ? false : form.managed,
+    })
     fetchedModels.value = models
     message.success(models.length ? `连接成功，拉取到 ${models.length} 个模型` : '连接成功')
   } catch (e) {

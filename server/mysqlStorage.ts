@@ -617,7 +617,8 @@ export function mysqlStoragePlugin(config: MysqlStorageConfig): Plugin {
     try {
       await start()
       const actor=await actorFromRequest(pool,req)
-      const match=(req.url??'/').match(/^\/([^/]+)(\/.*)$/)
+      const requestPath=(req.url??'/').replace(/^\/api\/ai(?=\/)/,'')
+      const match=requestPath.match(/^\/([^/]+)(\/.*)$/)
       if(!match) throw Object.assign(new Error('AI 通道请求地址无效'),{statusCode:400})
       const provider=await resolveManagedAiProvider(pool,actor,decodeURIComponent(match[1]!))
       const upstreamUrl=provider.baseUrl.replace(/\/+$/,'')+match[2]
