@@ -260,7 +260,12 @@ function onSave() {
           </n-space>
         </n-form-item>
         <n-form-item label="Base URL">
-          <n-input v-model:value="form.baseUrl" :disabled="isTenantMode && !isCustom" placeholder="https://api.example.com/v1" />
+          <n-space vertical size="small" style="width: 100%">
+            <n-input v-model:value="form.baseUrl" placeholder="https://api.example.com/v1" />
+            <n-text v-if="isTenantMode && !isCustom" depth="3" style="font-size: 12px">
+              可按服务商提供的兼容地址修改；切换协议会恢复该预设的默认地址。
+            </n-text>
+          </n-space>
         </n-form-item>
         <n-form-item label="API Key">
           <n-input

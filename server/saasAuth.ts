@@ -539,7 +539,7 @@ export async function dispatchSaas(pool: Pool, action: string, input: Input, req
       const available=await availableAiModelRows(pool),allowedSet=new Set(available.filter((row)=>String(row.providerPresetId)===presetId).map((row)=>String(row.model)))
       if(!allowedSet.size)throw new Error('该服务商尚未由平台开放')
       if(!models.length||models.some((model:string)=>!allowedSet.has(model)))throw new Error('请选择平台为该服务商开放的模型')
-      providerName=preset.name;baseUrl=endpoint;corsHint=preset.corsHint
+      providerName=preset.name;corsHint=preset.corsHint
     } else if(!models.length) throw new Error('自定义服务商请至少填写一个模型')
     const now = Date.now(), cipher = apiKey ? encryptCredential(apiKey) : existing[0].credential_cipher
     await pool.execute(`INSERT INTO ai_providers (id,owner_type,owner_id,name,protocol,base_url,credential_cipher,models,preset_id,cors_hint,use_proxy,enabled,created_at,updated_at)

@@ -28,18 +28,30 @@ export function createClient(provider: ProviderConfig): LLMClient {
   }
 }
 
-/** 连通性测试：优先拉取模型列表；未实现该接口的服务商退化为最小对话请求 */
+/** 连通性测试：模型列表成功不代表模型可生成，必须再发起一次最小对话请求。 */
 export async function testProvider(provider: ProviderConfig): Promise<{ models: string[] }> {
   const client = createClient(provider)
+  let models: string[] = []
   try {
-    return { models: await client.listModels() }
+    models = await client.listModels()
   } catch (e) {
     if (!(e instanceof LLMError) || e.kind !== 'bad_request') throw e
   }
-  const model = provider.models[0]
+  const model = provider.models[0] ?? models[0]
   if (!model) {
-    throw new LLMError('bad_request', '该服务商未提供模型列表接口，请先手动填写一个模型名再测试')
+    throw new LLMError('bad_request', '未找到可测试的模型，请先手动填写一个模型名再测试')
   }
-  await client.chat({ model, messages: [{ role: 'user', content: 'ping' }], maxTokens: 8 })
-  return { models: [] }
+  try {
+    await client.chat({ model, messages: [{ role: 'user', content: '仅回复 OK' }], maxTokens: 32 })
+  } catch (e) {
+    if (e instanceof LLMError && e.kind === 'server') {
+      throw new LLMError(
+        'server',
+        `模型列表可读取，但模型 ${model} 无法完成对话：${e.message}。请更换可用模型后重试`,
+        { status: e.status, cause: e },
+      )
+    }
+    throw e
+  }
+  return { models }
 }

@@ -64,7 +64,12 @@ export async function errorFromResponse(resp: Response): Promise<LLMError> {
       retryAfterMs: Number.isFinite(ra) && ra > 0 ? ra * 1000 : undefined,
     })
   }
-  if (status >= 500) return new LLMError('server', `服务端错误：${msg}`, { status })
+  if (status >= 500) {
+    const advice = /temporarily unavailable/i.test(msg)
+      ? '（当前模型通道暂时不可用，请测试并切换到其他可用模型）'
+      : ''
+    return new LLMError('server', `服务端错误：${msg}${advice}`, { status })
+  }
   return new LLMError('bad_request', `请求错误：${msg}`, { status })
 }
 

@@ -252,6 +252,8 @@ test('AI providers are tenant isolated, platform channels are shared and token s
   assert.equal((await storageRequest('ops.ai.models.list')).allModelsEnabled, false)
   const tenantProvider = { id: 'tenant-deepseek', name: '自有 DeepSeek', protocol: 'openai', baseUrl: 'https://tenant.invalid/v1', apiKey: 'tenant-secret', models: ['deepseek-chat'], presetId: 'deepseek', corsHint: 'unknown', useProxy: true }
   await tenant('ai.tenant.provider.upsert', { provider: tenantProvider })
+  config = await tenant('ai.config.get')
+  assert.equal(config.payload.result.providers.find((item) => item.id === 'tenant-deepseek').baseUrl, 'https://tenant.invalid/v1')
   const customProvider = { id: 'tenant-custom', name: '自由渠道', protocol: 'openai', baseUrl: 'https://custom.invalid/v1', apiKey: 'custom-secret', models: ['custom-model'], corsHint: 'unknown', useProxy: true }
   assert.equal((await tenant('ai.tenant.provider.upsert', { provider: customProvider })).status, 200)
   await tenant('ai.tenant.selection.update', { modelSelection: { analysis: { providerId: 'platform-openai', model: 'gpt-5.1' }, generation: { providerId: 'tenant-deepseek', model: 'deepseek-chat' } } })
