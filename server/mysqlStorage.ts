@@ -189,6 +189,12 @@ async function initialize(pool: Pool) {
       CONSTRAINT fk_assets_project FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
       CONSTRAINT fk_assets_doc FOREIGN KEY (doc_id) REFERENCES source_docs(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+    `CREATE TABLE IF NOT EXISTS iteration_tasks (
+      id VARCHAR(128) PRIMARY KEY, tenant_id VARCHAR(128) NOT NULL, created_by VARCHAR(128) NOT NULL,
+      status VARCHAR(32) NOT NULL, updated_at BIGINT NOT NULL, data LONGTEXT NOT NULL,
+      INDEX idx_iteration_tasks_tenant_updated (tenant_id, updated_at),
+      INDEX idx_iteration_tasks_status (status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
   ]
   for (const statement of statements) await pool.query(statement)
   await initializeSaas(pool)
@@ -202,7 +208,8 @@ const TENANT_ADMIN_ACTIONS = new Set([
   'project.importBundle',
 ])
 const WRITE_ACTIONS = new Set([
-  'project.update', 'project.copyIteration', 'project.saveConstraint', 'project.removeConstraint',
+  'project.update', 'project.updateProfile', 'project.copyIteration', 'project.copyIterations', 'project.saveConstraint', 'project.removeConstraint',
+  'iterationTask.create', 'iterationTask.save', 'iterationTask.cancel', 'iterationTask.remove',
   'page.create', 'page.bulkCreate', 'page.update', 'page.saveAnnotationStore', 'page.remove', 'page.resetStale', 'page.saveHierarchy', 'page.rename', 'page.copy',
   'version.add', 'version.initializeHtml', 'version.importLayrr', 'doc.bulkCreate', 'asset.bulkCreate',
 ])
@@ -210,7 +217,7 @@ const WRITE_ACTIONS = new Set([
 async function projectIdForAction(db: Db, action: string, input: Entity): Promise<string | undefined> {
   if (['project.get','project.update','project.setHidden','project.removeCascade'].includes(action)) return input.id
   if (action === 'project.importBundle' && input.targetProjectId) return input.targetProjectId
-  if (['project.saveConstraint','project.removeConstraint','page.listByProject','page.resetStale','page.saveHierarchy','page.copy','version.initializeHtml','version.importLayrr','doc.listByProject','asset.listByProject','workbench.load'].includes(action)) return input.projectId
+  if (['project.updateProfile','project.saveConstraint','project.removeConstraint','page.listByProject','page.resetStale','page.saveHierarchy','page.copy','version.initializeHtml','version.importLayrr','doc.listByProject','asset.listByProject','workbench.load'].includes(action)) return input.projectId
   if (['project.copyIteration'].includes(action)) return input.sourceId
   if (['project.updateFamily','project.removeFamily'].includes(action)) {
     const result=await rows<RowDataPacket[]>(db,'SELECT id FROM projects WHERE family_id=? LIMIT 1',[input.familyId]); return result[0]?.id as string|undefined
@@ -248,8 +255,36 @@ async function dispatch(pool: Pool, action: string, input: Entity, actor: Actor 
     const admin = requireTenantAdmin(user)
     input = { ...input, project: { ...input.project, tenantId: admin.tenantId, createdBy: admin.userId } }
   } else {
-    if (action === 'project.copyIteration') requireIterationCreator(user)
+    if (action.startsWith('iterationTask.')) {
+      requireIterationCreator(user)
+      const task = action === 'iterationTask.create'
+        ? input.task
+        : action === 'iterationTask.save'
+          ? input.task
+          : action === 'iterationTask.cancel' || action === 'iterationTask.remove'
+            ? await entity(pool, 'iteration_tasks', input.id)
+            : undefined
+      if (task) {
+        if (task.tenantId && task.tenantId !== user.tenantId) throw Object.assign(new Error('无权访问该迭代任务'), { statusCode: 403 })
+        for (const endpoint of task.endpoints ?? []) {
+          if (!endpoint?.sourceProjectId) continue
+          await resolveProjectAccess(pool, user, endpoint.sourceProjectId, 'write')
+          if (action === 'iterationTask.create') {
+            const sourceProject = await project(pool, endpoint.sourceProjectId)
+            if (sourceProject?.hidden)
+              throw Object.assign(new Error('隐藏项目不能加入多端迭代任务'), { statusCode: 400 })
+          }
+        }
+      }
+    } else if (action === 'project.copyIteration' || action === 'project.copyIterations') requireIterationCreator(user)
     else if (TENANT_ADMIN_ACTIONS.has(action)) requireTenantAdmin(user)
+    if (action === 'project.copyIterations') {
+      if (!Array.isArray(input.requests) || !input.requests.length || input.requests.length > 8) throw new Error('请选择 1–8 个需要同步迭代的端')
+      for (const request of input.requests) {
+        if (!request?.sourceId) throw new Error('同步迭代来源版本无效')
+        await resolveProjectAccess(pool, user, request.sourceId, 'write')
+      }
+    }
     const projectId = await projectIdForAction(pool, action, input)
     if (projectId) await resolveProjectAccess(pool, user, projectId, WRITE_ACTIONS.has(action) || TENANT_ADMIN_ACTIONS.has(action) ? 'write' : 'read')
     else if (WRITE_ACTIONS.has(action) && !canWrite(user)) throw Object.assign(new Error('审阅者仅可查看原型，不能编辑'), { statusCode: 403 })
@@ -267,6 +302,90 @@ async function dispatch(pool: Pool, action: string, input: Entity, actor: Actor 
       return { usage: Number(result[0]?.usage ?? 0), quota: 0 }
     }
     case 'project.get': return project(pool, input.id)
+    case 'iterationTask.list': {
+      const result = await rows<RowDataPacket[]>(pool, 'SELECT data FROM iteration_tasks WHERE tenant_id = ? ORDER BY updated_at DESC LIMIT 50', [user.tenantId!])
+      const tasks = result.map((row) => parse<Entity>(row.data))
+      if (user.tenantRole === 'tenant_admin') return tasks
+      const accessible: Entity[] = []
+      for (const task of tasks) {
+        try {
+          for (const endpoint of task.endpoints ?? [])
+            await resolveProjectAccess(pool, user, endpoint.sourceProjectId, 'write')
+          accessible.push(task)
+        } catch {
+          // A task is visible only when every participating project is still writable.
+        }
+      }
+      return accessible
+    }
+    case 'iterationTask.create': return transaction(pool, async (db) => {
+      const now = Date.now()
+      const value: Entity = {
+        ...input.task,
+        id: String(input.task?.id || nanoid()),
+        tenantId: user.tenantId,
+        createdBy: user.userId,
+        status: ['pending', 'running', 'failed', 'completed', 'cancelled'].includes(input.task?.status) ? input.task.status : 'pending',
+        createdAt: Number(input.task?.createdAt) || now,
+        updatedAt: now,
+      }
+      if (!Array.isArray(value.endpoints) || !value.endpoints.length || value.endpoints.length > 8) throw new Error('迭代任务必须包含 1–8 个端')
+      await db.execute('INSERT INTO iteration_tasks (id,tenant_id,created_by,status,updated_at,data) VALUES (?,?,?,?,?,?)', [value.id,user.tenantId!,user.userId,value.status,value.updatedAt,json(value)])
+      return value
+    })
+    case 'iterationTask.save': return transaction(pool, async (db) => {
+      const current = await entity(db, 'iteration_tasks', input.task?.id, true)
+      if (!current || current.tenantId !== user.tenantId) throw new Error('迭代任务不存在')
+      if (current.status === 'cancelled') throw new Error('迭代任务已撤销，不能继续写入')
+      const now = Date.now()
+      const value = {
+        ...input.task,
+        id: current.id,
+        tenantId: current.tenantId,
+        createdBy: current.createdBy,
+        createdAt: current.createdAt,
+        updatedAt: now,
+      }
+      if (!Array.isArray(value.endpoints) || !value.endpoints.length || value.endpoints.length > 8) throw new Error('迭代任务数据无效')
+      await db.execute('UPDATE iteration_tasks SET status=?,updated_at=?,data=? WHERE id=?', [value.status,value.updatedAt,json(value),value.id])
+      return value
+    })
+    case 'iterationTask.cancel': return transaction(pool, async (db) => {
+      const current = await entity(db, 'iteration_tasks', input.id, true)
+      if (!current || current.tenantId !== user.tenantId) throw new Error('迭代任务不存在')
+      if (current.status === 'completed') throw new Error('已完成任务不能撤销')
+      const targetIds: string[] = []
+      for (const endpoint of current.endpoints ?? []) {
+        if (!endpoint.targetProjectId) continue
+        const target = await project(db, endpoint.targetProjectId, true)
+        if (!target || target.tenantId !== user.tenantId) throw new Error('任务目标版本不存在或无权访问')
+        if (
+          target.id === endpoint.sourceProjectId ||
+          target.basedOnId !== endpoint.sourceProjectId ||
+          (target.familyId ?? target.id) !== endpoint.sourceFamilyId ||
+          String(target.iteration ?? 'v1.0').toLowerCase() !== String(endpoint.targetIteration).toLowerCase()
+        ) throw new Error('任务目标版本归属校验失败，已停止删除')
+        await resolveProjectAccess(db, user, target.id, 'write')
+        targetIds.push(target.id)
+      }
+      const uniqueTargetIds = [...new Set(targetIds)]
+      if (input.deleteVersions && uniqueTargetIds.length) {
+        const placeholders = uniqueTargetIds.map(() => '?').join(',')
+        await db.execute(`DELETE FROM projects WHERE id IN (${placeholders}) AND tenant_id=?`, [...uniqueTargetIds,user.tenantId!])
+      }
+      const now = Date.now()
+      const value: Entity = {
+        ...current,
+        status: 'cancelled',
+        cancelMode: input.deleteVersions ? 'delete-versions' : 'keep-versions',
+        cancelledAt: now,
+        updatedAt: now,
+        error: undefined,
+      }
+      await db.execute('UPDATE iteration_tasks SET status=?,updated_at=?,data=? WHERE id=?', [value.status,now,json(value),value.id])
+      return value
+    })
+    case 'iterationTask.remove': await pool.execute('DELETE FROM iteration_tasks WHERE id=? AND tenant_id=?', [input.id,user.tenantId!]); return null
     case 'project.create': return transaction(pool, async (db) => {
       const value = { ...input.project, familyId: input.project.familyId ?? input.project.id, iteration: input.project.iteration ?? 'v1.0' }
       await putProject(db, value)
@@ -408,6 +527,22 @@ async function dispatch(pool: Pool, action: string, input: Entity, actor: Actor 
       for (const row of result) { const value = { ...parse<Entity>(row.data), ...input.patch }; await putProject(db, value, true) }
       return null
     })
+    case 'project.updateProfile': return transaction(pool, async (db) => {
+      const current = await project(db, input.projectId, true)
+      if (!current) throw new Error('项目不存在，请刷新后重试')
+      const profile = {
+        nature: String(input.profile?.nature ?? '').trim().slice(0, 120),
+        purpose: String(input.profile?.purpose ?? '').trim().slice(0, 2000),
+      }
+      if (!profile.nature && !profile.purpose) throw new Error('请填写端性质或项目用途')
+      const familyId = current.familyId ?? current.id
+      const result = await rows<RowDataPacket[]>(db, 'SELECT data FROM projects WHERE family_id = ? AND tenant_id = ? ORDER BY id FOR UPDATE', [familyId, user.tenantId!])
+      for (const row of result) {
+        const value = { ...parse<Entity>(row.data), endpointProfile: profile }
+        await putProject(db, value, true)
+      }
+      return profile
+    })
     case 'project.removeCascade': await pool.execute('DELETE FROM projects WHERE id = ?', [input.id]); return null
     case 'project.removeFamily': await pool.execute('DELETE FROM projects WHERE family_id = ? AND tenant_id = ?', [input.familyId, user.tenantId!]); return null
     case 'project.saveConstraint': return transaction(pool, async (db) => {
@@ -424,9 +559,11 @@ async function dispatch(pool: Pool, action: string, input: Entity, actor: Actor 
       const items = (current.generationConstraints ?? []).filter((item: Entity) => item.id !== input.id)
       await updateProject(db, input.projectId, { generationConstraints: items }); return items
     })
-    case 'project.copyIteration': return transaction(pool, async (db) => {
-      const source = await project(db, input.sourceId); if (!source) throw new Error('来源版本不存在')
-      const label = input.iteration.trim(); if (!label) throw new Error('请输入版本号')
+    case 'project.copyIteration':
+    case 'project.copyIterations': return transaction(pool, async (db) => {
+      const copyOne = async (copyInput: Entity): Promise<Entity> => {
+      const source = await project(db, copyInput.sourceId); if (!source) throw new Error('来源版本不存在')
+      const label = copyInput.iteration.trim(); if (!label) throw new Error('请输入版本号')
       const familyId = source.familyId ?? source.id
       const siblings = await rows<RowDataPacket[]>(db, 'SELECT data FROM projects WHERE family_id = ? AND tenant_id = ? ORDER BY id FOR UPDATE', [familyId, user.tenantId!])
       if (siblings.some((row) => parse<Entity>(row.data).iteration?.toLowerCase() === label.toLowerCase())) throw new Error('该版本号已存在')
@@ -438,24 +575,128 @@ async function dispatch(pool: Pool, action: string, input: Entity, actor: Actor 
       const versionValues: Entity[] = versions.map((row) => ({ ...parse<Entity>(row.data), html: row.html }))
       const docs = await rows<RowDataPacket[]>(db, 'SELECT data FROM source_docs WHERE project_id = ?', [source.id])
       const assets = await rows<RowDataPacket[]>(db, 'SELECT data, asset_blob FROM assets WHERE project_id = ?', [source.id])
+      const rawRequirement = copyInput.requirement && typeof copyInput.requirement === 'object' ? copyInput.requirement : undefined
+      const requirementText = String(rawRequirement?.text ?? '').trim().slice(0, 200000)
+      const requirementDocuments = Array.isArray(rawRequirement?.documents)
+        ? rawRequirement.documents.slice(0, 30).map((item: Entity) => ({
+            fileName: String(item.fileName ?? '迭代需求').slice(0, 255),
+            fileType: ['docx', 'pdf', 'xlsx', 'md', 'txt', 'image'].includes(item.fileType) ? item.fileType : 'txt',
+            text: String(item.text ?? '').slice(0, 2 * 1024 * 1024),
+            meta: item.meta && typeof item.meta === 'object' ? item.meta : {},
+          }))
+        : []
+      const relatedPages = Array.isArray(rawRequirement?.relatedPages)
+        ? rawRequirement.relatedPages.slice(0, 100).map((item: Entity) => ({
+            projectId: String(item.projectId ?? ''), projectName: String(item.projectName ?? '').slice(0, 120),
+            iteration: String(item.iteration ?? 'v1.0').slice(0, 80), platform: item.platform === 'mobile' ? 'mobile' : 'pc',
+            pageId: String(item.pageId ?? ''), pageName: String(item.pageName ?? '').slice(0, 120),
+            description: String(item.description ?? '').slice(0, 1200),
+            blocks: Array.isArray(item.blocks) ? item.blocks.map((block: unknown) => String(block).slice(0, 240)).slice(0, 16) : [],
+          })).filter((item: Entity) => item.projectId && item.pageId)
+        : []
+      const relatedById = new Map(relatedPages.map((item: Entity) => [item.pageId, item]))
+      const productNature = String(rawRequirement?.plan?.productNature ?? '').trim().slice(0, 240)
+      const planSummary = String(rawRequirement?.plan?.summary ?? '').trim().slice(0, 2000)
+      const planChanges = Array.isArray(rawRequirement?.plan?.changes) ? rawRequirement.plan.changes.slice(0, 40) : []
+      const pageById = new Map(pages.map((item) => [item.id, item]))
+      const updateBySourceId = new Map<string, Entity>()
+      const createChanges: Entity[] = []
+      for (const raw of planChanges) {
+        if (!raw || (raw.action !== 'update' && raw.action !== 'create')) continue
+        const relatedPageIds = Array.isArray(raw.relatedPageIds)
+          ? [...new Set<string>(raw.relatedPageIds.map(String).filter((id: string) => relatedById.has(id)))]
+          : []
+        const change: Entity = {
+          action: raw.action,
+          sourcePageId: typeof raw.sourcePageId === 'string' ? raw.sourcePageId : undefined,
+          parentSourcePageId: typeof raw.parentSourcePageId === 'string' ? raw.parentSourcePageId : undefined,
+          name: String(raw.name ?? '').trim().slice(0, 80),
+          description: String(raw.description ?? '').trim().slice(0, 1200),
+          blocks: Array.isArray(raw.blocks) ? raw.blocks.map((block: unknown) => String(block).trim()).filter(Boolean).slice(0, 16) : [],
+          reason: String(raw.reason ?? '根据本次版本需求进行初始迭代').trim().slice(0, 1200),
+          relatedPageIds,
+        }
+        if (change.action === 'update') {
+          const sourcePage = change.sourcePageId ? pageById.get(change.sourcePageId) : undefined
+          if (sourcePage && !sourcePage.spec.groupOnly && !updateBySourceId.has(sourcePage.id)) updateBySourceId.set(sourcePage.id, change)
+        } else if (change.name) createChanges.push(change)
+      }
+      if (rawRequirement && !requirementText && !requirementDocuments.length) throw new Error('请填写或上传新版本功能需求')
+      if (rawRequirement && !updateBySourceId.size && !createChanges.length) throw new Error('AI 未规划出可执行的版本页面变更')
       const pageIds = new Map(pages.map((item) => [item.id, nanoid()]))
       const versionIds = Object.fromEntries(versionValues.map((item) => [item.id, nanoid()]))
       const docIds = Object.fromEntries(docs.map((row) => [parse<Entity>(row.data).id, nanoid()]))
       const remapConstraint = (item: Entity) => ({ ...item, sourcePageId: item.sourcePageId ? pageIds.get(item.sourcePageId) : undefined })
       // PageSpec IDs describe the tree and may differ from database Page IDs.
       // Keep that tree intact; remap only references to database records.
-      const copiedPages = pages.map((item) => ({
-        ...item, id: pageIds.get(item.id),
-        spec: {
-          ...item.spec,
-          ...(item.spec.constraints ? { constraints: { ...item.spec.constraints, items: item.spec.constraints.items.map(remapConstraint) } } : {}),
-          ...(item.spec.importedPages ? { importedPages: item.spec.importedPages.map((reference: Entity) => ({ ...reference, pageId: pageIds.get(reference.pageId) })).filter((reference: Entity) => !!reference.pageId) } : {}),
-        },
-        currentVersionId: item.currentVersionId ? versionIds[item.currentVersionId] : undefined,
-        reviewPending: false, updatedAt: now,
-      }))
+      const copiedPages: Entity[] = pages.map((item) => {
+        const change = updateBySourceId.get(item.id)
+        return {
+          ...item, id: pageIds.get(item.id),
+          spec: {
+            ...item.spec,
+            ...(change ? {
+              description: change.description || item.spec.description,
+              blocks: change.blocks.length ? change.blocks : item.spec.blocks,
+              iterationChange: { action: 'update', reason: change.reason, relatedPageIds: change.relatedPageIds },
+            } : {}),
+            ...(item.spec.constraints ? { constraints: { ...item.spec.constraints, items: item.spec.constraints.items.map(remapConstraint) } } : {}),
+            ...(item.spec.importedPages ? { importedPages: item.spec.importedPages.map((reference: Entity) => ({ ...reference, pageId: pageIds.get(reference.pageId) })).filter((reference: Entity) => !!reference.pageId) } : {}),
+          },
+          currentVersionId: item.currentVersionId ? versionIds[item.currentVersionId] : undefined,
+          ...(change ? { genStatus: 'idle', errorMessage: undefined, iterationInitialized: false } : {}),
+          reviewPending: false, updatedAt: now,
+        }
+      })
+      const usedNames = new Set(copiedPages.map((item) => String(item.spec.name).trim().toLowerCase()))
+      for (const change of createChanges) {
+        const sourceParent = change.parentSourcePageId ? pageById.get(change.parentSourcePageId) : undefined
+        const requested = change.name.toLowerCase().includes(label.toLowerCase()) ? change.name : `${change.name} ${label}`
+        let name = requested, suffix = 2
+        while (usedNames.has(name.toLowerCase())) name = `${requested} ${suffix++}`
+        usedNames.add(name.toLowerCase())
+        const id = nanoid()
+        copiedPages.push({
+          id, projectId: '', sortOrder: copiedPages.length, genStatus: 'idle', reviewPending: false,
+          iterationInitialized: false, updatedAt: now,
+          spec: {
+            id: nanoid(), name,
+            ...(sourceParent ? { parentId: sourceParent.spec.id } : {}),
+            description: change.description, blocks: change.blocks,
+            iterationChange: { action: 'create', reason: change.reason, relatedPageIds: change.relatedPageIds },
+          },
+        })
+      }
+      const copiedVersionValues = versionValues.map((item) => ({ ...item, id: versionIds[item.id], pageId: pageIds.get(item.pageId) }))
+      const baselineVersions: Entity[] = []
+      if (rawRequirement) {
+        for (const sourcePage of pages) {
+          if (!updateBySourceId.has(sourcePage.id) || !sourcePage.currentVersionId) continue
+          const current = versionValues.find((item) => item.id === sourcePage.currentVersionId)
+          const copiedPage = copiedPages.find((item) => item.id === pageIds.get(sourcePage.id))
+          if (!current || !copiedPage) continue
+          const baseline = {
+            id: nanoid(), pageId: copiedPage.id,
+            versionNumber: Math.max(0, ...versionValues.filter((item) => item.pageId === sourcePage.id).map((item) => Number(item.versionNumber) || 0)) + 1,
+            html: current.html, source: 'copy', feedbackText: `旧版本 ${source.iteration ?? 'v1.0'} 基线`, createdAt: now,
+          }
+          baselineVersions.push(baseline)
+          copiedPage.currentVersionId = baseline.id
+        }
+      }
+      const iterationRequirement = rawRequirement ? {
+        text: requirementText,
+        documentNames: requirementDocuments.map((item: Entity) => item.fileName),
+        sourceProjectId: source.id,
+        sourceIteration: source.iteration ?? 'v1.0',
+        productNature,
+        relatedPages,
+        planSummary,
+        createdAt: now,
+      } : undefined
       const target: Entity = {
         ...source, id: nanoid(), tenantId: user.tenantId, createdBy: user.userId, familyId, iteration: label, basedOnId: source.id, createdAt: now, updatedAt: now,
+        iterationRequirement,
         ...(source.generationConstraints ? { generationConstraints: source.generationConstraints.map(remapConstraint) } : {}),
         ...(source.analysis ? { analysis: { ...source.analysis, pages: copiedPages.map((item) => item.spec) } } : {}),
       }
@@ -463,10 +704,19 @@ async function dispatch(pool: Pool, action: string, input: Entity, actor: Actor 
       const assignedUsers = await rows<RowDataPacket[]>(db, `SELECT DISTINCT pm.user_id userId FROM project_members pm JOIN projects p ON p.id=pm.project_id WHERE p.tenant_id=? AND COALESCE(p.family_id,p.id)=?`, [user.tenantId!, familyId])
       for (const member of assignedUsers) await db.execute('INSERT IGNORE INTO project_members (project_id,user_id,created_at) VALUES (?,?,?)', [target.id, member.userId, now])
       for (const item of copiedPages) await putPage(db, { ...item, projectId: target.id })
-      for (const item of versionValues) await putVersion(db, { ...item, id: versionIds[item.id], pageId: pageIds.get(item.pageId) })
+      for (const item of copiedVersionValues) await putVersion(db, item)
+      for (const item of baselineVersions) await putVersion(db, item)
       for (const row of docs) { const item = parse<Entity>(row.data); const saved = { ...item, id: docIds[item.id], projectId: target.id }; await db.execute('INSERT INTO source_docs (id, project_id, data) VALUES (?, ?, ?)', [saved.id, target.id, json(saved)]) }
+      for (const item of requirementDocuments) { const saved = { ...item, id: nanoid(), projectId: target.id, meta: { ...item.meta, iterationRequirement: true, iteration: label } }; await db.execute('INSERT INTO source_docs (id, project_id, data) VALUES (?, ?, ?)', [saved.id, target.id, json(saved)]) }
       for (const row of assets) { const item = parse<Entity>(row.data); const saved: Entity = { ...item, id: nanoid(), projectId: target.id, docId: docIds[item.docId] ?? item.docId }; await db.execute('INSERT INTO assets (id, project_id, doc_id, mime_type, origin, asset_blob, data) VALUES (?, ?, ?, ?, ?, ?, ?)', [saved.id, target.id, saved.docId, saved.mimeType, saved.origin, row.asset_blob, json(saved)]) }
       return target
+      }
+      if (action === 'project.copyIterations') {
+        const created: Entity[] = []
+        for (const request of input.requests) created.push(await copyOne(request))
+        return created
+      }
+      return copyOne(input)
     })
     case 'page.listByProject': { const result = await rows<RowDataPacket[]>(pool, 'SELECT data FROM pages WHERE project_id = ? ORDER BY sort_order', [input.projectId]); return result.map((row) => parse(row.data)) }
     case 'page.get': return page(pool, input.id)

@@ -11,6 +11,8 @@ export interface Page {
   genStatus: PageGenStatus
   errorMessage?: string
   currentVersionId?: string
+  /** True after the new iteration's initial AI change has been saved. */
+  iterationInitialized?: boolean
   /** AI-produced version has not yet been acknowledged from the page menu. */
   reviewPending?: boolean
   /** Visual review annotations stored separately from the prototype HTML. */

@@ -2,7 +2,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useDialog, useMessage } from 'naive-ui'
-import type { Project } from '@/types/project'
+import type { Project, ProjectEndpointProfile } from '@/types/project'
+import type { IterationTask } from '@/types/iterationTask'
 import { projectRepo, pageRepo } from '@/services/storage/repositories'
 import { getStylePreset } from '@/data/stylePresets'
 import { formatTime } from '@/utils/format'
@@ -12,6 +13,7 @@ import { useAuthStore } from '@/stores/auth'
 import AccountSettingsDialog from '@/components/account/AccountSettingsDialog.vue'
 import ShareMenu from '@/components/workbench/ShareMenu.vue'
 import { importProjectPackage } from '@/services/storage/projectPackage'
+import CreateIterationDialog from '@/components/project/CreateIterationDialog.vue'
 
 const router = useRouter()
 const dialog = useDialog()
@@ -49,35 +51,13 @@ function enterProject(project: Project) {
   void router.push(`/project/${project.id}`)
 }
 const copyShow = ref(false)
-const copySource = ref('')
-const copyLabel = ref('')
-const copyFamily = ref('')
-const copying = ref(false)
-const copyOptions = computed(() =>
-  projects.value
-    .filter((p) => (p.familyId ?? p.id) === copyFamily.value)
-    .map((p) => ({ label: p.iteration ?? 'v1.0', value: p.id })),
-)
+const copyTarget = ref<Project | null>(null)
 function openCopy(project: Project) {
-  copyFamily.value = project.familyId ?? project.id
-  copySource.value = project.id
-  copyLabel.value = ''
+  copyTarget.value = project
   copyShow.value = true
 }
-async function submitCopy() {
-  if (copying.value || !copySource.value || !copyLabel.value.trim()) return
-  copying.value = true
-  try {
-    const target = await projectRepo.copyIteration(copySource.value, copyLabel.value)
-    selectedIterations.value[target.familyId!] = target.id
-    await refresh()
-    copyShow.value = false
-    message.success('新版本已复制，可选择该版本进入开发')
-  } catch (error) {
-    message.error(error instanceof Error ? error.message : '复制版本失败')
-  } finally {
-    copying.value = false
-  }
+function handleTaskReady(task: IterationTask) {
+  void router.push(`/iterations/${task.id}`)
 }
 const pageCounts = ref(new Map<string, number>())
 const loading = ref(true)
@@ -92,7 +72,13 @@ const visibleProjects = computed(() => {
   const keyword = adminSearch.value.trim().toLowerCase()
   if (auth.isAdmin && keyword) {
     families = families.filter(({ selected }) =>
-      [selected.name, selected.iteration, selected.platform]
+      [
+        selected.name,
+        selected.iteration,
+        selected.platform,
+        selected.endpointProfile?.nature,
+        selected.endpointProfile?.purpose,
+      ]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(keyword)),
     )
@@ -120,6 +106,19 @@ async function toggleHidden(project: Project) {
 const renameShow = ref(false)
 const renameTarget = ref<Project | null>(null)
 const renameValue = ref('')
+const profileShow = ref(false)
+const profileTarget = ref<Project | null>(null)
+const profileNature = ref('')
+const profilePurpose = ref('')
+const profileSaving = ref(false)
+const versionManageShow = ref(false)
+const versionManageFamilyId = ref('')
+const managedVersions = computed(() =>
+  projects.value
+    .filter((project) => (project.familyId ?? project.id) === versionManageFamilyId.value)
+    .sort((a, b) => b.updatedAt - a.updatedAt),
+)
+const managedProjectName = computed(() => managedVersions.value[0]?.name ?? '项目')
 
 async function refresh() {
   loading.value = true
@@ -134,6 +133,7 @@ async function refresh() {
     loading.value = false
   }
 }
+
 
 function confirmRemove(project: Project) {
   dialog.warning({
@@ -161,6 +161,63 @@ async function submitRename() {
   await projectRepo.updateFamily(renameTarget.value.familyId ?? renameTarget.value.id, { name })
   renameShow.value = false
   await refresh()
+}
+
+function openProfile(project: Project) {
+  profileTarget.value = project
+  profileNature.value = project.endpointProfile?.nature || ''
+  profilePurpose.value = project.endpointProfile?.purpose || ''
+  profileShow.value = true
+}
+
+async function submitProfile() {
+  const target = profileTarget.value
+  const profile: ProjectEndpointProfile = {
+    nature: profileNature.value.trim(),
+    purpose: profilePurpose.value.trim(),
+  }
+  if (!target || (!profile.nature && !profile.purpose) || profileSaving.value) return
+  profileSaving.value = true
+  try {
+    const saved = await projectRepo.updateProfile(target.id, profile)
+    const familyId = target.familyId ?? target.id
+    for (const project of projects.value)
+      if ((project.familyId ?? project.id) === familyId) project.endpointProfile = saved
+    profileShow.value = false
+    message.success('项目信息已保存，将用于后续 AI 版本迭代规划')
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '项目信息保存失败')
+  } finally {
+    profileSaving.value = false
+  }
+}
+
+function openVersionManager(project: Project) {
+  versionManageFamilyId.value = project.familyId ?? project.id
+  versionManageShow.value = true
+}
+
+function confirmRemoveIteration(project: Project) {
+  if (managedVersions.value.length <= 1) return
+  const familyId = project.familyId ?? project.id
+  dialog.warning({
+    title: '删除项目版本',
+    content: `确认删除「${project.name} · ${project.iteration ?? 'v1.0'}」？该版本下的页面、页面历史、需求文档和图片都会永久删除，其他版本不受影响。`,
+    positiveText: '确认删除版本',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        await projectRepo.removeCascade(project.id)
+        const remaining = managedVersions.value.filter((item) => item.id !== project.id)
+        if (selectedIterations.value[familyId] === project.id && remaining.length)
+          selectedIterations.value[familyId] = remaining[0]!.id
+        message.success(`版本 ${project.iteration ?? 'v1.0'} 已删除`)
+        await refresh()
+      } catch (error) {
+        message.error(error instanceof Error ? error.message : '版本删除失败')
+      }
+    },
+  })
 }
 
 async function initialize() {
@@ -197,6 +254,7 @@ onMounted(initialize)
       <nav class="admin-nav" aria-label="团队管理导航">
         <button :class="{ active: !showHidden }" @click="showHidden = false"><span class="nav-icon">▦</span><span>全部项目</span><em>{{ projectFamilies.length - hiddenCount }}</em></button>
         <button :class="{ active: showHidden }" @click="showHidden = true"><span class="nav-icon">◉</span><span>隐藏项目</span><em>{{ hiddenCount }}</em></button>
+        <button @click="router.push('/iterations')"><span class="nav-icon">⇄</span><span>多端迭代</span></button>
         <div class="nav-divider" />
         <button @click="router.push('/saas')"><span class="nav-icon">♙</span><span>团队管理</span></button>
         <button @click="router.push('/usage')"><span class="nav-icon">◫</span><span>用量使用情况</span></button>
@@ -294,6 +352,7 @@ onMounted(initialize)
       <n-tag v-if="adminSearch" :bordered="false">搜索“{{ adminSearch }}”</n-tag>
     </div>
 
+
     <n-spin v-if="loading" style="margin: 80px auto; display: block" />
 
     <n-empty
@@ -345,6 +404,10 @@ onMounted(initialize)
             · {{ pageCounts.get(p.id) ?? 0 }} 个页面
           </n-text>
           <n-text depth="3" style="font-size: 12px"> 更新于 {{ formatTime(p.updatedAt) }} </n-text>
+          <div v-if="p.endpointProfile?.nature || p.endpointProfile?.purpose" class="project-profile-summary">
+            <strong v-if="p.endpointProfile?.nature">{{ p.endpointProfile.nature }}</strong>
+            <span v-if="p.endpointProfile?.purpose">{{ p.endpointProfile.purpose }}</span>
+          </div>
         </n-space>
         <template #action>
           <div class="card-actions" @click.stop>
@@ -366,6 +429,8 @@ onMounted(initialize)
               />
             </div>
             <n-space v-if="!auth.isReviewer" justify="end" size="small">
+              <n-button size="tiny" quaternary @click="openProfile(p)">项目信息</n-button>
+              <n-button v-if="auth.isAdmin" size="tiny" quaternary @click="openVersionManager(p)">版本管理</n-button>
               <n-button v-if="auth.canCreateIteration" size="tiny" quaternary @click="openCopy(p)">新建版本</n-button>
               <n-button size="tiny" quaternary type="primary" @click="enterProject(p)"
                 >进入</n-button
@@ -390,42 +455,13 @@ onMounted(initialize)
     </div>
     </section>
 
-    <n-modal
+    <CreateIterationDialog
       v-model:show="copyShow"
-      preset="card"
-      title="新建迭代版本"
-      style="width: 440px"
-      :mask-closable="!copying"
-      :closable="!copying"
-      :close-on-esc="!copying"
-    >
-      <n-form label-placement="top" size="small">
-        <n-form-item label="基于已有版本复制（必选）">
-          <n-select v-model:value="copySource" :options="copyOptions" :disabled="copying" />
-        </n-form-item>
-        <n-form-item label="新版本号">
-          <n-input
-            v-model:value="copyLabel"
-            placeholder="例如 v1.1 或 v2.0"
-            :disabled="copying"
-            @keyup.enter="submitCopy"
-          />
-        </n-form-item>
-        <n-text depth="3">复制页面、生成内容、历史记录和文档；各版本后续修改互不影响。</n-text>
-      </n-form>
-      <template #footer
-        ><n-space justify="end">
-          <n-button :disabled="copying" @click="copyShow = false">取消</n-button>
-          <n-button
-            type="primary"
-            :loading="copying"
-            :disabled="!copySource || !copyLabel.trim()"
-            @click="submitCopy"
-            >复制新版本</n-button
-          >
-        </n-space></template
-      >
-    </n-modal>
+      :source="copyTarget"
+      :projects="projects"
+      :allow-synchronized="false"
+      @task-ready="handleTaskReady"
+    />
     <n-modal v-model:show="renameShow" preset="card" title="重命名项目" style="width: 400px">
       <n-input v-model:value="renameValue" @keyup.enter="submitRename" />
       <template #footer>
@@ -434,6 +470,96 @@ onMounted(initialize)
           <n-button type="primary" :disabled="!renameValue.trim()" @click="submitRename">
             保存
           </n-button>
+        </n-space>
+      </template>
+    </n-modal>
+    <n-modal
+      v-model:show="profileShow"
+      preset="card"
+      title="项目信息"
+      style="width: min(560px, 94vw)"
+      :mask-closable="!profileSaving"
+      :closable="!profileSaving"
+    >
+      <n-alert type="info" :bordered="false" class="profile-ai-note">
+        这些信息用于帮助 AI 理解当前项目属于什么端、承担什么业务。后续新建版本或关联多个端同步迭代时，会自动作为页面变更与缺失页面规划的上下文。
+      </n-alert>
+      <n-form label-placement="top">
+        <n-form-item label="端性质">
+          <n-input
+            v-model:value="profileNature"
+            maxlength="120"
+            show-count
+            :disabled="profileSaving"
+            placeholder="例如：平台运营管理端、企业 B 端 PC 管理后台、消费者 C 端小程序"
+          />
+        </n-form-item>
+        <n-form-item label="项目用途">
+          <n-input
+            v-model:value="profilePurpose"
+            type="textarea"
+            :rows="5"
+            maxlength="2000"
+            show-count
+            :disabled="profileSaving"
+            placeholder="说明服务对象、核心业务、该端承担的职责，以及与其他端的协作关系。"
+          />
+        </n-form-item>
+      </n-form>
+      <template #footer>
+        <n-space justify="end">
+          <n-button :disabled="profileSaving" @click="profileShow = false">取消</n-button>
+          <n-button
+            type="primary"
+            :loading="profileSaving"
+            :disabled="!profileNature.trim() && !profilePurpose.trim()"
+            @click="submitProfile"
+          >
+            保存项目信息
+          </n-button>
+        </n-space>
+      </template>
+    </n-modal>
+    <n-modal
+      v-model:show="versionManageShow"
+      preset="card"
+      :title="`${managedProjectName} · 版本管理`"
+      style="width: min(620px, 94vw)"
+    >
+      <n-alert type="warning" :bordered="false" class="version-manage-note">
+        删除版本会同步删除该版本下的页面、页面历史、需求文档和图片，且无法恢复。至少需要保留一个版本。
+      </n-alert>
+      <div class="version-manage-list">
+        <div v-for="version in managedVersions" :key="version.id" class="version-manage-row">
+          <div>
+            <strong>{{ version.iteration ?? 'v1.0' }}</strong>
+            <span>
+              {{ pageCounts.get(version.id) ?? 0 }} 个页面 · 更新于 {{ formatTime(version.updatedAt) }}
+            </span>
+          </div>
+          <n-tag
+            v-if="selectedIterations[version.familyId ?? version.id] === version.id"
+            size="small"
+            :bordered="false"
+            type="info"
+          >
+            当前选择
+          </n-tag>
+          <n-button
+            size="small"
+            secondary
+            type="error"
+            :disabled="managedVersions.length <= 1"
+            :title="managedVersions.length <= 1 ? '至少需要保留一个版本' : `删除版本 ${version.iteration ?? 'v1.0'}`"
+            @click="confirmRemoveIteration(version)"
+          >
+            删除
+          </n-button>
+        </div>
+      </div>
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="versionManageShow = false">关闭</n-button>
         </n-space>
       </template>
     </n-modal>
@@ -641,6 +767,78 @@ onMounted(initialize)
   font-size: 17px;
 }
 
+.iteration-task-panel {
+  margin-bottom: 18px;
+  border: 1px solid color-mix(in srgb, #f59e0b 42%, var(--qp-border));
+  border-radius: 6px;
+  background: var(--qp-pane);
+}
+
+.iteration-task-head,
+.iteration-task-row,
+.iteration-task-title,
+.iteration-task-actions {
+  display: flex;
+  align-items: center;
+}
+
+.iteration-task-head {
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--qp-border);
+}
+
+.iteration-task-head > div {
+  display: grid;
+  gap: 2px;
+}
+
+.iteration-task-head span,
+.iteration-task-main > span {
+  color: var(--qp-text-muted);
+  font-size: 11px;
+}
+
+.iteration-task-row {
+  justify-content: space-between;
+  gap: 18px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--qp-border);
+}
+
+.iteration-task-row:last-child {
+  border-bottom: 0;
+}
+
+.iteration-task-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.iteration-task-title {
+  gap: 8px;
+}
+
+.iteration-session-ids {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iteration-task-main em {
+  color: #ef4444;
+  font-size: 11px;
+  font-style: normal;
+  white-space: pre-line;
+}
+
+.iteration-task-actions {
+  flex-shrink: 0;
+  gap: 6px;
+}
+
 .card-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -650,6 +848,72 @@ onMounted(initialize)
 .project-card {
   cursor: pointer;
 }
+
+.project-profile-summary {
+  display: grid;
+  gap: 3px;
+  padding: 8px 10px;
+  border-left: 2px solid #3b82f6;
+  background: color-mix(in srgb, var(--qp-pane) 70%, transparent);
+  font-size: 11px;
+}
+
+.project-profile-summary strong {
+  color: var(--qp-text);
+  font-size: 12px;
+}
+
+.project-profile-summary span {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--qp-text-muted);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.profile-ai-note {
+  margin-bottom: 16px;
+}
+
+.version-manage-note {
+  margin-bottom: 14px;
+}
+
+.version-manage-list {
+  overflow: hidden;
+  border: 1px solid var(--qp-border);
+  border-radius: 6px;
+}
+
+.version-manage-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 70px;
+  align-items: center;
+  gap: 12px;
+  min-height: 62px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--qp-border);
+}
+
+.version-manage-row:last-child {
+  border-bottom: 0;
+}
+
+.version-manage-row > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.version-manage-row strong {
+  font-size: 14px;
+}
+
+.version-manage-row span {
+  color: var(--qp-text-muted);
+  font-size: 11px;
+}
+
 .card-actions {
   display: flex;
   align-items: center;
@@ -726,6 +990,19 @@ onMounted(initialize)
 
   .card-grid {
     grid-template-columns: 1fr;
+  }
+
+  .version-manage-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .version-manage-row > .n-tag {
+    display: none;
+  }
+
+  .iteration-task-row {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 </style>

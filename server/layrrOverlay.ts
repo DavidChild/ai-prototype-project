@@ -31,7 +31,115 @@ export function adaptLayrrOverlay(source: string): string {
 /** Keep workspace-specific behavior separate from the official selector compatibility fix. */
 export function adaptLayrrWorkspaceOverlay(source: string): string {
   let adapted = adaptLayrrOverlay(source)
+  const attachmentCssNeedle =
+    '    .${L}-hn{padding:0 10px 6px;font-size:${size.xs};color:${C.textDim};display:flex;gap:10px}'
+  const attachmentCss = [
+    attachmentCssNeedle,
+    '    .${L}-ar{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:8px;margin-top:10px;min-height:34px}',
+    '    .${L}-ab{height:34px;flex:0 0 auto;padding:0 12px;border:1px solid rgba(161,161,170,.38);border-radius:${radius.md};background:rgba(161,161,170,.12);color:${C.text};cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;font-size:${size.sm};font-weight:600;white-space:nowrap}',
+    '    .${L}-ab:hover{border-color:rgba(161,161,170,.65);background:rgba(161,161,170,.18)}',
+    '    .${L}-ah{min-width:0;color:${C.textMuted};font-size:${size.sm};line-height:1.5}',
+    '    .${L}-al{grid-column:1/-1;min-width:0;display:flex;align-items:center;gap:6px}',
+    '    .${L}-ac{min-width:0;max-width:220px;height:28px;display:flex;align-items:center;gap:6px;padding:3px 6px 3px 3px;border:1px solid ${C.border};border-radius:${radius.md};background:${C.surface};color:${C.textMuted};font-size:${size.xs}}',
+    '    .${L}-ac img{width:20px;height:20px;object-fit:cover;border-radius:3px;flex:0 0 auto}',
+    '    .${L}-ac span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+    '    .${L}-ad{border:0;background:transparent;color:${C.textDim};cursor:pointer;padding:0;font-size:${size.base};line-height:1}',
+  ].join('\n')
+  const attachmentHtmlNeedle = [
+    '      <div class="${L}-ia">',
+    '        <div class="${L}-ir">',
+    '          <textarea class="${L}-in" placeholder="Describe the change..." rows="1"></textarea>',
+    '          <button class="${L}-sb"><span class="${L}-st"><i class="icon-arrow-up"></i></span><div class="${L}-sp"></div></button>',
+    '        </div>',
+    '      </div>',
+  ].join('\n')
+  const attachmentHtml = [
+    '      <div class="${L}-ia">',
+    '        <div class="${L}-ir">',
+    '          <textarea class="${L}-in" placeholder="Describe the change..." rows="1"></textarea>',
+    '          <button class="${L}-sb"><span class="${L}-st"><i class="icon-arrow-up"></i></span><div class="${L}-sp"></div></button>',
+    '        </div>',
+    '        <div class="${L}-ar">',
+    '          <button type="button" class="${L}-ab" title="上传参考图"><i class="icon-image"></i><span>上传参考图</span></button>',
+    '          <div class="${L}-ah">点击上传或在输入框按 Ctrl+V 粘贴图片；可结合文字说明，在选定区块的上、下、左、右追加或还原参考图内容。</div>',
+    '          <input class="${L}-af" type="file" accept="image/png,image/jpeg,image/webp" hidden>',
+    '          <div class="${L}-al"></div>',
+    '        </div>',
+    '      </div>',
+  ].join('\n')
+  const attachmentHelpersNeedle = '    async function sendEdit() {'
+  const attachmentHelpers = [
+    '    function clearEditAttachments2() {',
+    '      app2.attachments = [];',
+    '      if (app2.attachmentInputEl) app2.attachmentInputEl.value = "";',
+    '      if (app2.attachmentListEl) app2.attachmentListEl.replaceChildren();',
+    '    }',
+    '    function renderEditAttachments2() {',
+    '      const list = app2.attachmentListEl;',
+    '      if (!list) return;',
+    '      list.replaceChildren();',
+    '      for (const item of app2.attachments || []) {',
+    '        const chip = document.createElement("div");',
+    '        chip.className = `${L4}-ac`;',
+    '        const image = document.createElement("img");',
+    '        image.src = `data:${item.mimeType};base64,${item.base64}`;',
+    '        image.alt = "";',
+    '        const name = document.createElement("span");',
+    '        name.textContent = item.name;',
+    '        const remove = document.createElement("button");',
+    '        remove.type = "button";',
+    '        remove.className = `${L4}-ad`;',
+    '        remove.title = "移除参考图";',
+    '        remove.textContent = "×";',
+    '        remove.addEventListener("click", clearEditAttachments2);',
+    '        chip.append(image, name, remove);',
+    '        list.appendChild(chip);',
+    '      }',
+    '    }',
+    '    async function addEditAttachment2(file) {',
+    '      if (!file) return;',
+    '      if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {',
+    '        toast2("请选择 PNG、JPG 或 WebP 图片", "error");',
+    '        return;',
+    '      }',
+    '      if (file.size > 2 * 1024 * 1024) {',
+    '        toast2("参考图不能超过 2 MB", "error");',
+    '        return;',
+    '      }',
+    '      const dataUrl = await new Promise((resolve, reject) => {',
+    '        const reader = new FileReader();',
+    '        reader.onload = () => resolve(String(reader.result || ""));',
+    '        reader.onerror = () => reject(new Error("参考图读取失败"));',
+    '        reader.readAsDataURL(file);',
+    '      });',
+    '      const base64 = String(dataUrl).split(",", 2)[1] || "";',
+    '      if (!base64) { toast2("参考图读取失败", "error"); return; }',
+    '      app2.attachments = [{ name: file.name.slice(0, 120), mimeType: file.type, base64 }];',
+    '      renderEditAttachments2();',
+    '    }',
+    attachmentHelpersNeedle,
+  ].join('\n')
   const replacements = [
+    [
+      '      backdrop-filter:blur(16px) saturate(1.2);-webkit-backdrop-filter:blur(16px) saturate(1.2);',
+      '      backdrop-filter:none;-webkit-backdrop-filter:none;backface-visibility:hidden;',
+    ],
+    [
+      '      box-shadow:${shadow.lg};',
+      '      box-shadow:0 6px 18px rgba(0,0,0,.32);',
+    ],
+    [
+      '      transition:box-shadow .12s,border-color .12s;',
+      '      transition:border-color .12s;',
+    ],
+    [
+      '    .${L}-panel{\n      display:none;width:320px;max-height:280px;overflow-y:auto;',
+      '    .${L}-panel{\n      display:none;width:min(640px,calc(100vw - 32px));max-height:min(560px,calc(100vh - 72px));overflow-y:auto;',
+    ],
+    [
+      '      min-height:30px;max-height:72px;',
+      '      min-height:240px;max-height:480px;',
+    ],
     [
       '    #${L}-toasts{position:fixed;bottom:56px;right:16px;z-index:999999;display:flex;flex-direction:column-reverse;gap:6px}',
       '    #${L}-toasts{position:fixed;top:16px;bottom:auto;right:16px;z-index:1000000;display:flex;flex-direction:column;align-items:flex-end;gap:8px;max-width:calc(100vw - 32px);max-height:calc(100vh - 32px);overflow-y:auto;pointer-events:none}',
@@ -66,10 +174,45 @@ export function adaptLayrrWorkspaceOverlay(source: string): string {
         save2();
       }`,
     ],
+    [attachmentCssNeedle, attachmentCss],
+    [attachmentHtmlNeedle, attachmentHtml],
+    [
+      '      sendBtnEl: null,\n        pollTimer: null,',
+      '      sendBtnEl: null,\n        attachments: [],\n        attachmentInputEl: null,\n        attachmentListEl: null,\n        pollTimer: null,',
+    ],
+    [attachmentHelpersNeedle, attachmentHelpers],
+    [
+      '      const instruction = input.value.trim();\n      if (!instruction) return;',
+      '      const typedInstruction = input.value.trim();\n      const instruction = typedInstruction || (app2.attachments?.length ? "请根据附件参考图修改选中元素，尽量还原图片中与选中区域相关的内容和样式。" : "");\n      if (!instruction) return;',
+    ],
+    [
+      'instruction, sourceInfo }));',
+      'instruction, sourceInfo, attachments: app2.attachments }));',
+    ],
+    [
+      '          instruction,\n          sourceInfo,\n          elements: resolvedElements',
+      '          instruction,\n          sourceInfo,\n          attachments: app2.attachments,\n          elements: resolvedElements',
+    ],
+    [
+      '      app2.sendBtnEl = panel.querySelector(`.${L4}-sb`);',
+      '      app2.sendBtnEl = panel.querySelector(`.${L4}-sb`);\n      app2.attachmentInputEl = panel.querySelector(`.${L4}-af`);\n      app2.attachmentListEl = panel.querySelector(`.${L4}-al`);\n      app2.attachments = [];',
+    ],
+    [
+      '      app2.sendBtnEl.addEventListener("click", sendEdit);',
+      '      app2.sendBtnEl.addEventListener("click", sendEdit);\n      panel.querySelector(`.${L4}-ab`)?.addEventListener("click", () => app2.attachmentInputEl?.click());\n      app2.attachmentInputEl?.addEventListener("change", () => {\n        const file = app2.attachmentInputEl?.files?.[0];\n        if (file) void addEditAttachment2(file).catch((error) => toast2(error.message || "参考图读取失败", "error"));\n      });\n      panel.addEventListener("paste", (event) => {\n        const imageItem = Array.from(event.clipboardData?.items || []).find((item) => item.kind === "file" && ["image/png", "image/jpeg", "image/webp"].includes(item.type));\n        const file = imageItem?.getAsFile();\n        if (!file) return;\n        event.preventDefault();\n        void addEditAttachment2(file).catch((error) => toast2(error.message || "参考图读取失败", "error"));\n      });',
+    ],
+    [
+      '      if (msg.success) {\n        app2.editCount++;',
+      '      if (msg.success) {\n        clearEditAttachments2();\n        app2.editCount++;',
+    ],
+    [
+      '          input.value = "";\n          input.style.height = "auto";',
+      '          input.value = "";\n          input.style.height = "auto";\n          clearEditAttachments2();',
+    ],
   ] as const
   for (const [before, after] of replacements) {
     if (adapted.split(before).length !== 2)
-      throw new Error('Layrr 工作区适配不兼容，请检查固定依赖版本')
+      throw new Error(`Layrr 工作区适配不兼容：${before.slice(0, 80)}`)
     adapted = adapted.replace(before, after)
   }
   const translations = [

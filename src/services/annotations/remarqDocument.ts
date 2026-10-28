@@ -1,6 +1,7 @@
 import type { AnnotationStore } from 'web-remarq'
 import webRemarqRuntime from '../../../node_modules/web-remarq/dist/web-remarq.global.js?raw'
 import { ANNOTATION_DIRECTION_OPTIONS } from './annotationDirections'
+import { QUALITY_CONFIRMATION_OPTIONS } from './qualityConfirmationOptions'
 import { adaptWebRemarqRuntime } from './remarqLocalization'
 
 export const EMPTY_ANNOTATION_STORE: AnnotationStore = { version: 1, annotations: [] }
@@ -55,6 +56,7 @@ function bootstrapScript(config: {
   const readOnly = ${config.readOnly ? 'true' : 'false'};
   const clone = (value) => JSON.parse(JSON.stringify(value));
   const annotationDirectionOptions = ${safeJson(ANNOTATION_DIRECTION_OPTIONS)};
+  const qualityConfirmationOptions = ${safeJson(QUALITY_CONFIRMATION_OPTIONS)};
   const popupOverrides = document.createElement('style');
   popupOverrides.id = 'quickpage-remarq-overrides';
   popupOverrides.textContent = [
@@ -82,6 +84,10 @@ function bootstrapScript(config: {
     '.quickpage-remarq-generate-btn { height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 1px solid var(--remarq-accent); border-radius: 5px; background: transparent; color: var(--remarq-accent); font: 600 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; cursor: pointer; }',
     '.quickpage-remarq-generate-btn:hover { background: var(--remarq-accent); color: #fff; }',
     '.quickpage-remarq-generate-btn:disabled { opacity: .65; cursor: wait; }',
+    '.quickpage-remarq-generate-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }',
+    '.quickpage-remarq-add-actions { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }',
+    '.quickpage-remarq-add-actions button { width: 100%; min-height: 34px; }',
+    '.quickpage-remarq-add-actions button:disabled { opacity: .45; cursor: not-allowed; }',
     '.quickpage-remarq-ai-status { min-height: 17px; color: var(--remarq-text-secondary); font-size: 11px; line-height: 1.45; }',
     '.quickpage-remarq-ai-status[data-error="true"] { color: #ef4444; }',
     '.quickpage-remarq-quality { display: grid; gap: 9px; margin-top: 12px; padding: 11px; border: 1px dashed var(--remarq-border); border-radius: 6px; }',
@@ -94,6 +100,12 @@ function bootstrapScript(config: {
     '.quickpage-remarq-quality-section { display: grid; gap: 4px; color: var(--remarq-text); font-size: 12px; }',
     '.quickpage-remarq-quality-section strong { font-size: 11px; }',
     '.quickpage-remarq-quality-section ul { margin: 0; padding-left: 18px; }',
+    '.quickpage-remarq-confirm-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 10px; }',
+    '.quickpage-remarq-confirm-option { min-width: 0; display: flex; align-items: flex-start; gap: 7px; padding: 7px 8px; border: 1px solid var(--remarq-border); border-radius: 5px; color: var(--remarq-text); font-size: 11px; line-height: 1.35; cursor: pointer; }',
+    '.quickpage-remarq-confirm-option:has(input:checked) { border-color: var(--remarq-accent); background: color-mix(in srgb, var(--remarq-accent) 10%, transparent); }',
+    '.quickpage-remarq-confirm-option input { width: 14px; height: 14px; margin: 1px 0 0; accent-color: var(--remarq-accent); flex: 0 0 auto; }',
+    '.quickpage-remarq-confirm-option span { min-width: 0; overflow-wrap: anywhere; }',
+    '.remarq-popup textarea.quickpage-remarq-confirm-instruction { min-height: 68px !important; height: 68px !important; max-height: 120px; }',
     '.quickpage-remarq-quality-actions { display: flex; flex-wrap: wrap; gap: 6px; }',
     '.quickpage-remarq-quality-btn { min-height: 30px; padding: 0 10px; border: 1px solid var(--remarq-border); border-radius: 5px; background: var(--remarq-bg-secondary); color: var(--remarq-text); font: 600 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; cursor: pointer; }',
     '.quickpage-remarq-quality-btn:hover { border-color: var(--remarq-accent); color: var(--remarq-accent); }',
@@ -224,12 +236,42 @@ function bootstrapScript(config: {
     if (element.children.length > 20) score -= 5;
     return score;
   };
+  const elementEvidence = (element) => ({
+    tagName: element.tagName.toLowerCase(),
+    id: element.id || null,
+    role: element.getAttribute('role'),
+    ariaLabel: element.getAttribute('aria-label'),
+    classes: stableClasses(element).slice(0, 6),
+    text: elementText(element).slice(0, 120) || null,
+    childCount: element.children.length,
+  });
+  const elementStructure = (element) => {
+    const ancestors = [];
+    let current = element.parentElement;
+    while (current && current !== document.body && ancestors.length < 6) {
+      ancestors.push({ ...elementEvidence(current), level: ancestors.length + 1 });
+      current = current.parentElement;
+    }
+    const siblings = element.parentElement
+      ? Array.from(element.parentElement.children)
+          .filter((item) => item !== element)
+          .slice(0, 8)
+          .map(elementEvidence)
+      : [];
+    return {
+      target: elementEvidence(element),
+      ancestors,
+      children: Array.from(element.children).slice(0, 8).map(elementEvidence),
+      siblings,
+    };
+  };
   const makeCandidate = (element, id) => {
     const description = describeElement(element);
     return {
       id,
       ...description,
       fingerprint: fingerprint(element),
+      structure: id === 'selected' ? elementStructure(element) : undefined,
       route: route(),
       viewport: { width: innerWidth, height: innerHeight },
     };
@@ -407,7 +449,7 @@ function bootstrapScript(config: {
     async save(annotation) {
       if (readOnly) return;
       const index = store.annotations.findIndex((item) => item.id === annotation.id);
-      const saved = { ...annotation, route: route() };
+      const saved = { ...annotation, route: remapRoute(annotation.route || route()) };
       if (index < 0) store.annotations.push(saved);
       else store.annotations[index] = saved;
       if (channel) await post('store', clone(store));
@@ -459,6 +501,21 @@ function bootstrapScript(config: {
       event.stopImmediatePropagation();
     }, true);
   };
+  const configureAddActions = (popup, textarea) => {
+    const addButton = Array.from(popup.querySelectorAll('.remarq-popup-actions button'))
+      .find((button) => button.textContent?.trim() === '保存标注');
+    if (!(addButton instanceof HTMLButtonElement)) return;
+    const actions = addButton.closest('.remarq-popup-actions');
+    if (actions instanceof HTMLElement) actions.classList.add('quickpage-remarq-add-actions');
+    const syncSaveButton = () => {
+      addButton.disabled = !textarea.value.trim();
+    };
+    if (textarea.dataset.quickpageSaveGuard !== 'true') {
+      textarea.dataset.quickpageSaveGuard = 'true';
+      textarea.addEventListener('input', syncSaveButton);
+    }
+    syncSaveButton();
+  };
   const enhanceAnnotationEditing = () => {
     const popup = document.querySelector('.remarq-popup');
     if (!(popup instanceof HTMLElement)) return;
@@ -467,9 +524,7 @@ function bootstrapScript(config: {
       keepEnterAsNewline(addTextarea);
       const hint = popup.querySelector('.remarq-popup-hint');
       if (hint instanceof HTMLElement) hint.textContent = 'Enter 换行 · 点击“保存标注”保存';
-      const addButton = Array.from(popup.querySelectorAll('.remarq-popup-actions button'))
-        .find((button) => button.textContent === '保存标注');
-      if (addButton instanceof HTMLButtonElement) addButton.textContent = '保存标注';
+      configureAddActions(popup, addTextarea);
     }
     const editTextarea = popup.querySelector('.remarq-popup-edit-textarea');
     const existingActions = popup.querySelector('.quickpage-remarq-edit-actions');
@@ -516,6 +571,7 @@ function bootstrapScript(config: {
     const body = popup?.querySelector('.remarq-popup-body');
     if (!(popup instanceof HTMLElement) || !(textarea instanceof HTMLTextAreaElement) ||
         !(body instanceof HTMLElement) || popup.querySelector('.quickpage-remarq-popup-ai')) return;
+    configureAddActions(popup, textarea);
 
     const panel = document.createElement('div');
     panel.className = 'quickpage-remarq-popup-ai';
@@ -554,13 +610,29 @@ function bootstrapScript(config: {
     generateButton.type = 'button';
     generateButton.className = 'quickpage-remarq-generate-btn';
     generateButton.textContent = 'AI 生成原型标注';
+    const supplementButton = document.createElement('button');
+    supplementButton.type = 'button';
+    supplementButton.className = 'quickpage-remarq-generate-btn';
+    supplementButton.textContent = '帮我确认补充';
+    const generateActions = document.createElement('div');
+    generateActions.className = 'quickpage-remarq-generate-actions';
+    generateActions.append(generateButton, supplementButton);
+    let aiRequestPending = false;
+    const syncSupplementButton = () => {
+      supplementButton.disabled = aiRequestPending ||
+        !textarea.value.trim() || !textarea.value.includes('待确认');
+    };
+    textarea.addEventListener('input', syncSupplementButton);
+    syncSupplementButton();
     const status = document.createElement('div');
     status.className = 'quickpage-remarq-ai-status';
     status.setAttribute('aria-live', 'polite');
     generateButton.addEventListener('click', async () => {
       const selectedElement = selectedElementForDraft;
       if (!(selectedElement instanceof HTMLElement)) return;
+      aiRequestPending = true;
       generateButton.disabled = true;
+      syncSupplementButton();
       generateButton.textContent = 'AI 生成中...';
       status.dataset.error = 'false';
       status.textContent = '正在结合项目、页面和所选元素生成标注';
@@ -585,8 +657,60 @@ function bootstrapScript(config: {
         status.dataset.error = 'true';
         status.textContent = error instanceof Error ? error.message : 'AI 标注生成失败，请重试';
       } finally {
+        aiRequestPending = false;
         generateButton.disabled = false;
+        syncSupplementButton();
         generateButton.textContent = 'AI 生成原型标注';
+        requestAnimationFrame(fitRemarqPopup);
+      }
+    });
+    supplementButton.addEventListener('click', async () => {
+      const selectedElement = selectedElementForDraft;
+      const comment = textarea.value.trim();
+      if (!(selectedElement instanceof HTMLElement)) return;
+      if (!comment) {
+        status.dataset.error = 'true';
+        status.textContent = '请先生成或输入原型标注，再确认补充';
+        return;
+      }
+      aiRequestPending = true;
+      syncSupplementButton();
+      generateButton.disabled = true;
+      supplementButton.textContent = 'AI 确认中...';
+      status.dataset.error = 'false';
+      status.textContent = '正在确认草稿中的待确认项并补充规则';
+      try {
+        const selectedDirections = directionInputs
+          .filter((input) => input.checked)
+          .map((input) => input.value);
+        const additionalInstruction = [
+          selectedDirections.length ? '重点标注方向：' + selectedDirections.join('、') : '',
+          instruction.value.trim(),
+        ].filter(Boolean).join('\\n');
+        const result = await post('supplementElementDraft', {
+          annotation: {
+            comment,
+            fingerprint: fingerprint(selectedElement),
+            route: route(),
+            viewport: { width: innerWidth, height: innerHeight },
+          },
+          focusAreas: [],
+          instruction: additionalInstruction,
+        });
+        if (typeof result !== 'string' || !result.trim()) throw new Error('AI 未返回有效补充标注');
+        textarea.value = result.trim();
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        textarea.focus();
+        textarea.selectionStart = textarea.selectionEnd = textarea.value.length;
+        status.textContent = 'AI 已确认补充，请检查后点击“保存标注”';
+      } catch (error) {
+        status.dataset.error = 'true';
+        status.textContent = error instanceof Error ? error.message : 'AI 确认补充失败，请重试';
+      } finally {
+        aiRequestPending = false;
+        syncSupplementButton();
+        generateButton.disabled = false;
+        supplementButton.textContent = '帮我确认补充';
         requestAnimationFrame(fitRemarqPopup);
       }
     });
@@ -596,7 +720,7 @@ function bootstrapScript(config: {
       directionGrid,
       instructionLabel,
       instruction,
-      generateButton,
+      generateActions,
       status,
     );
     body.appendChild(panel);
@@ -649,6 +773,32 @@ function bootstrapScript(config: {
   });
   const currentAnnotation = () =>
     globalThis.WebRemarq.getAnnotations().find((item) => item.id === activeDetailAnnotationId);
+  const replaceAnnotation = async (annotationId, changes) => {
+    const annotations = globalThis.WebRemarq.getAnnotations();
+    const current = annotations.find((item) => item.id === annotationId);
+    if (!current) throw new Error('当前标注不存在或已被删除');
+    const updated = { ...current, ...changes };
+    Object.entries(changes).forEach(([key, value]) => {
+      if (value === undefined) delete updated[key];
+    });
+    const file = new File(
+      [JSON.stringify({ version: 1, annotations: annotations.map((item) =>
+        item.id === annotationId ? updated : item
+      ) })],
+      'updated-annotations.json',
+      { type: 'application/json' },
+    );
+    await globalThis.WebRemarq.import(file);
+    const saved = globalThis.WebRemarq.getAnnotations().find((item) => item.id === annotationId);
+    if (!saved) throw new Error('标注保存后未能重新读取');
+    for (const [key, value] of Object.entries(changes)) {
+      const matches = value === undefined
+        ? saved[key] === undefined
+        : JSON.stringify(saved[key]) === JSON.stringify(value);
+      if (!matches) throw new Error('标注保存校验失败，请重试');
+    }
+    return saved;
+  };
   const appendQualityList = (panel, title, items) => {
     if (!Array.isArray(items) || !items.length) return;
     const section = document.createElement('div');
@@ -666,17 +816,17 @@ function bootstrapScript(config: {
   };
   const closeDetailPopup = (popup) => {
     const closeButton = Array.from(popup.querySelectorAll('.remarq-popup-utility-btn'))
-      .find((button) => button.textContent === 'Close');
+      .find((button) => ['Close', '关闭'].includes(button.textContent?.trim() || ''));
     if (closeButton instanceof HTMLElement) closeButton.click();
   };
   const showSupplementDraft = (panel, popup, annotation, draft) => {
     panel.replaceChildren();
     const title = document.createElement('div');
     title.className = 'quickpage-remarq-quality-title';
-    title.textContent = 'AI 补充稿';
+    title.textContent = 'AI 确认补充稿';
     const hint = document.createElement('div');
     hint.className = 'quickpage-remarq-popup-ai-hint';
-    hint.textContent = '请检查补充内容；只有点击“保存补充”后才会替换原标注。';
+    hint.textContent = 'AI 已结合业务和当前终端确认待定项。请检查内容；只有点击“保存补充”后才会替换原标注。';
     const textarea = document.createElement('textarea');
     textarea.className = 'quickpage-remarq-quality-draft';
     textarea.value = draft;
@@ -707,22 +857,16 @@ function bootstrapScript(config: {
       }
       const latest = currentAnnotation();
       if (!latest) return;
-      const previousComment = latest.comment;
-      const previousQuality = latest.qualityCheck;
       saveButton.disabled = true;
       cancelButton.disabled = true;
       status.dataset.error = 'false';
       status.textContent = '正在保存补充标注';
       try {
-        latest.comment = comment;
-        delete latest.qualityCheck;
-        await storage.save(latest);
-        const marker = document.querySelector('.remarq-marker[data-annotation-id="' + latest.id + '"]');
+        const saved = await replaceAnnotation(latest.id, { comment, qualityCheck: undefined });
+        const marker = document.querySelector('.remarq-marker[data-annotation-id="' + saved.id + '"]');
         if (marker instanceof HTMLElement) marker.title = comment;
         closeDetailPopup(popup);
       } catch (error) {
-        latest.comment = previousComment;
-        if (previousQuality) latest.qualityCheck = previousQuality;
         status.dataset.error = 'true';
         status.textContent = error instanceof Error ? error.message : '补充标注保存失败，请重试';
         saveButton.disabled = false;
@@ -733,6 +877,87 @@ function bootstrapScript(config: {
     panel.append(title, hint, textarea, actions, status);
     textarea.focus();
     textarea.selectionStart = textarea.selectionEnd = textarea.value.length;
+    requestAnimationFrame(fitRemarqPopup);
+  };
+  const showQualityConfirmationOptions = (panel, popup, annotation) => {
+    panel.replaceChildren();
+    const title = document.createElement('div');
+    title.className = 'quickpage-remarq-quality-title';
+    title.textContent = '确认补充方向';
+    const hint = document.createElement('div');
+    hint.className = 'quickpage-remarq-popup-ai-hint';
+    hint.textContent = 'AI 只处理质检中的待确认项；如需额外复核某类规则，可按需勾选补充方向。';
+    const optionGrid = document.createElement('div');
+    optionGrid.className = 'quickpage-remarq-confirm-grid';
+    const optionInputs = qualityConfirmationOptions.map((option) => {
+      const label = document.createElement('label');
+      label.className = 'quickpage-remarq-confirm-option';
+      label.title = option.prompt;
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.value = option.value;
+      checkbox.checked = false;
+      const text = document.createElement('span');
+      text.textContent = option.label;
+      label.append(checkbox, text);
+      optionGrid.appendChild(label);
+      return checkbox;
+    });
+    const instructionLabel = document.createElement('label');
+    instructionLabel.className = 'quickpage-remarq-popup-ai-label';
+    instructionLabel.textContent = '其他补充要求';
+    const instruction = document.createElement('textarea');
+    instruction.className = 'quickpage-remarq-confirm-instruction';
+    instruction.maxLength = 800;
+    instruction.placeholder = '例如：每组默认展示 6 个，超过后换行并支持展开全部';
+    instruction.setAttribute('aria-label', '确认补充的其他要求');
+    instruction.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') event.stopPropagation();
+    });
+    const actions = document.createElement('div');
+    actions.className = 'quickpage-remarq-quality-actions';
+    const cancelButton = document.createElement('button');
+    cancelButton.type = 'button';
+    cancelButton.className = 'quickpage-remarq-quality-btn';
+    cancelButton.textContent = '取消';
+    const confirmButton = document.createElement('button');
+    confirmButton.type = 'button';
+    confirmButton.className = 'quickpage-remarq-quality-btn quickpage-remarq-quality-btn--primary';
+    confirmButton.textContent = '开始确认补充';
+    const status = document.createElement('div');
+    status.className = 'quickpage-remarq-quality-status';
+    status.setAttribute('aria-live', 'polite');
+    cancelButton.addEventListener('click', () => renderManualQualityPanel(panel, popup, annotation));
+    confirmButton.addEventListener('click', async () => {
+      const latest = currentAnnotation();
+      if (!latest?.qualityCheck) return;
+      confirmButton.disabled = true;
+      cancelButton.disabled = true;
+      optionInputs.forEach((input) => { input.disabled = true; });
+      instruction.disabled = true;
+      status.dataset.error = 'false';
+      status.textContent = 'AI 正在结合业务、终端和所选方向确认补充';
+      try {
+        const draft = await post('supplementQuality', {
+          annotation: qualityInput(latest),
+          qualityCheck: latest.qualityCheck,
+          focusAreas: optionInputs.filter((input) => input.checked).map((input) => input.value),
+          instruction: instruction.value.trim(),
+        });
+        if (typeof draft !== 'string' || !draft.trim()) throw new Error('AI 未返回有效补充标注');
+        showSupplementDraft(panel, popup, latest, draft.trim());
+      } catch (error) {
+        status.dataset.error = 'true';
+        status.textContent = error instanceof Error ? error.message : 'AI 确认补充失败，请重试';
+        confirmButton.disabled = false;
+        cancelButton.disabled = false;
+        optionInputs.forEach((input) => { input.disabled = false; });
+        instruction.disabled = false;
+      }
+      requestAnimationFrame(fitRemarqPopup);
+    });
+    actions.append(cancelButton, confirmButton);
+    panel.append(title, hint, optionGrid, instructionLabel, instruction, actions, status);
     requestAnimationFrame(fitRemarqPopup);
   };
   function renderManualQualityPanel(panel, popup, annotation) {
@@ -779,7 +1004,7 @@ function bootstrapScript(config: {
     if (check) {
       supplementButton.type = 'button';
       supplementButton.className = 'quickpage-remarq-quality-btn quickpage-remarq-quality-btn--primary';
-      supplementButton.textContent = 'AI 补充标注说明';
+      supplementButton.textContent = '帮我确认补充';
       actions.appendChild(supplementButton);
     }
     const status = document.createElement('div');
@@ -795,9 +1020,8 @@ function bootstrapScript(config: {
       try {
         const result = await post('quality', qualityInput(latest));
         if (!result || typeof result !== 'object') throw new Error('AI 未返回有效质检结果');
-        latest.qualityCheck = result;
-        await storage.save(latest);
-        renderManualQualityPanel(panel, popup, latest);
+        const saved = await replaceAnnotation(latest.id, { qualityCheck: result });
+        renderManualQualityPanel(panel, popup, saved);
       } catch (error) {
         status.dataset.error = 'true';
         status.textContent = error instanceof Error ? error.message : 'AI 质检失败，请重试';
@@ -807,26 +1031,10 @@ function bootstrapScript(config: {
       requestAnimationFrame(fitRemarqPopup);
     });
     if (check) {
-      supplementButton.addEventListener('click', async () => {
+      supplementButton.addEventListener('click', () => {
         const latest = currentAnnotation();
         if (!latest?.qualityCheck) return;
-        supplementButton.disabled = true;
-        checkButton.disabled = true;
-        status.dataset.error = 'false';
-        status.textContent = 'AI 正在根据质检结果补充标注说明';
-        try {
-          const draft = await post('supplementQuality', {
-            annotation: qualityInput(latest),
-            qualityCheck: latest.qualityCheck,
-          });
-          if (typeof draft !== 'string' || !draft.trim()) throw new Error('AI 未返回有效补充标注');
-          showSupplementDraft(panel, popup, latest, draft.trim());
-        } catch (error) {
-          status.dataset.error = 'true';
-          status.textContent = error instanceof Error ? error.message : 'AI 补充标注失败，请重试';
-          supplementButton.disabled = false;
-          checkButton.disabled = false;
-        }
+        showQualityConfirmationOptions(panel, popup, latest);
       });
     }
     panel.append(actions, status);
@@ -843,9 +1051,21 @@ function bootstrapScript(config: {
     const existing = popup.querySelector('.quickpage-remarq-quality');
     if (existing instanceof HTMLElement && existing.dataset.annotationId === annotation.id) {
       if (existing.dataset.comment !== annotation.comment) {
-        delete annotation.qualityCheck;
-        void storage.save(annotation).catch(() => {});
-        renderManualQualityPanel(existing, popup, annotation);
+        const previousPanelComment = existing.dataset.comment || '';
+        existing.dataset.comment = annotation.comment;
+        if (annotation.qualityCheck && existing.dataset.qualityResetPending !== 'true') {
+          existing.dataset.qualityResetPending = 'true';
+          void replaceAnnotation(annotation.id, { qualityCheck: undefined })
+            .then((saved) => {
+              if (existing.isConnected) renderManualQualityPanel(existing, popup, saved);
+            })
+            .catch(() => {
+              existing.dataset.comment = previousPanelComment;
+            })
+            .finally(() => { delete existing.dataset.qualityResetPending; });
+        } else {
+          renderManualQualityPanel(existing, popup, annotation);
+        }
       }
       return;
     }

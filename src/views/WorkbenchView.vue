@@ -164,15 +164,15 @@ watch(
         <CanvasPanel />
       </main>
       <ResizableInspectorPanel v-if="auth.canEdit">
-        <n-tabs type="line" size="small" default-value="refine" class="inspector-tabs">
+        <n-tabs type="line" size="small" default-value="info" class="inspector-tabs">
+          <n-tab-pane name="info" tab="构建">
+            <PageInfoForm />
+          </n-tab-pane>
           <n-tab-pane name="refine" tab="微调">
             <RefineChat />
           </n-tab-pane>
           <n-tab-pane name="versions" tab="版本">
             <VersionList />
-          </n-tab-pane>
-          <n-tab-pane name="info" tab="信息">
-            <PageInfoForm />
           </n-tab-pane>
         </n-tabs>
       </ResizableInspectorPanel>

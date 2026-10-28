@@ -1,6 +1,7 @@
 import type { RequirementAnalysis } from './analysis'
 import type { ModelSelection } from './provider'
 import type { GenerationConstraint } from './generationConstraint'
+import type { IterationRequirement } from './iteration'
 
 export type Platform = 'pc' | 'mobile'
 
@@ -39,13 +40,24 @@ export interface StyleSpec {
   customNotes?: string
 }
 
+export interface ProjectEndpointProfile {
+  /** Human-maintained endpoint nature; preferred over AI inference during iteration planning. */
+  nature: string
+  /** Business purpose, users and responsibilities of this endpoint. */
+  purpose: string
+}
+
 export interface Project {
   id: string
   /** 同一项目各迭代共享的标识；id 仍是工作台的独立数据空间。 */
   familyId?: string
   iteration?: string
   basedOnId?: string
+  /** Requirement and cross-platform context used to initialize this iteration. */
+  iterationRequirement?: IterationRequirement
   name: string
+  /** Shared by every iteration in the same project family. */
+  endpointProfile?: ProjectEndpointProfile
   /** 隐藏项目仅影响项目列表展示，不删除任何内容。 */
   hidden?: boolean
   platform: Platform

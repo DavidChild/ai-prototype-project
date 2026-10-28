@@ -8,6 +8,7 @@ import {
   getPresetProtocols,
   providerPresets,
   providerProtocolLabels,
+  SELF_HOSTED_PROVIDER_PRESET_ID,
 } from '@/data/providerPresets'
 import { testProvider } from '@/services/llm/factory'
 
@@ -38,15 +39,24 @@ const form = reactive<ProviderConfig>({
 
 const isTenantMode = computed(() => !!props.allowedPresetModels)
 const presetOptions = computed(() => [
-  ...providerPresets.filter((p) => !isTenantMode.value || (props.allowedPresetModels?.[p.id]?.length ?? 0) > 0).map((p) => ({ label: p.name, value: p.id })),
+  ...providerPresets.filter((p) =>
+    !isTenantMode.value ||
+    p.id === SELF_HOSTED_PROVIDER_PRESET_ID ||
+    (props.allowedPresetModels?.[p.id]?.length ?? 0) > 0,
+  ).map((p) => ({ label: p.name, value: p.id })),
   { label: '自定义服务商（自由渠道）', value: 'custom' },
 ])
 
 const selectedPreset = computed(() =>
   providerPresets.find((p) => p.id === (form.presetId ?? presetChoice.value)),
 )
-const isCustom = computed(() => !form.presetId)
-const selectableModels = computed(() => form.presetId ? (props.allowedPresetModels?.[form.presetId] ?? form.models) : form.models)
+const isSelfHosted = computed(() => form.presetId === SELF_HOSTED_PROVIDER_PRESET_ID)
+const isCustom = computed(() => !form.presetId || isSelfHosted.value)
+const selectableModels = computed(() =>
+  form.presetId && !isSelfHosted.value
+    ? (props.allowedPresetModels?.[form.presetId] ?? form.models)
+    : form.models,
+)
 
 const protocolOptions = computed(() => {
   const protocols = selectedPreset.value
@@ -131,7 +141,9 @@ function onPresetChange(value: string | null) {
   form.presetId = preset.id
   form.useProxy = preset.defaultUseProxy ?? false
   form.models = [...preset.suggestedModels]
-  if (isTenantMode.value) form.models = [...(props.allowedPresetModels?.[preset.id] ?? [])]
+  if (isTenantMode.value && preset.id !== SELF_HOSTED_PROVIDER_PRESET_ID) {
+    form.models = [...(props.allowedPresetModels?.[preset.id] ?? [])]
+  }
 }
 
 function onProtocolChange(protocol: ProviderProtocol) {
@@ -180,7 +192,7 @@ function onSave() {
     message.error('Base URL 需以 http(s):// 开头')
     return
   }
-  if (form.presetId && props.allowedPresetModels && form.models.some((model) => !(props.allowedPresetModels?.[form.presetId!] ?? []).includes(model))) {
+  if (form.presetId && !isSelfHosted.value && props.allowedPresetModels && form.models.some((model) => !(props.allowedPresetModels?.[form.presetId!] ?? []).includes(model))) {
     message.error('请选择平台为该服务商开放的模型')
     return
   }

@@ -1,10 +1,12 @@
 import { nanoid } from 'nanoid'
 import { storageRequest, type SourceDoc, type StoredAsset } from './db'
-import type { Project } from '@/types/project'
+import type { Project, ProjectEndpointProfile } from '@/types/project'
 import type { Page, PageVersion, PageVersionSource } from '@/types/page'
 import type { GenerationConstraint } from '@/types/generationConstraint'
 import { validateConstraint } from '@/prompts/generationConstraints'
 import { validateStore, type AnnotationStore } from 'web-remarq/core'
+import type { CopyIterationRequirementInput } from '@/types/iteration'
+import type { IterationTask } from '@/types/iterationTask'
 
 function clone<T>(value: T): T {
   // Vue reactive objects are JSON payloads, but cannot be structuredClone'd.
@@ -21,12 +23,32 @@ export const projectRepo = {
   async create(project: Project): Promise<void> {
     await storageRequest('project.create', { project: clone(project) })
   },
-  async copyIteration(sourceId: string, iteration: string): Promise<Project> {
+  async copyIteration(
+    sourceId: string,
+    iteration: string,
+    requirement?: CopyIterationRequirementInput,
+  ): Promise<Project> {
     const label = iteration.trim()
     if (!label) throw new Error('请输入版本号')
-    return storageRequest<Project>('project.copyIteration', { sourceId, iteration: label })
+    return storageRequest<Project>('project.copyIteration', {
+      sourceId,
+      iteration: label,
+      requirement: requirement ? clone(requirement) : undefined,
+    })
+  },
+  async copyIterations(
+    requests: Array<{
+      sourceId: string
+      iteration: string
+      requirement: CopyIterationRequirementInput
+    }>,
+  ): Promise<Project[]> {
+    if (!requests.length) throw new Error('请至少选择一个需要创建的新版本')
+    return storageRequest<Project[]>('project.copyIterations', { requests: clone(requests) })
   },
   updateFamily: (familyId: string, patch: { name?: string; hidden?: boolean }) => storageRequest<void>('project.updateFamily', { familyId, patch }),
+  updateProfile: (projectId: string, profile: ProjectEndpointProfile) =>
+    storageRequest<ProjectEndpointProfile>('project.updateProfile', { projectId, profile: clone(profile) }),
   removeFamily: (familyId: string) => storageRequest<void>('project.removeFamily', { familyId }),
   update: (id: string, patch: Partial<Omit<Project, 'id'>>) => storageRequest<void>('project.update', { id, ...patchPayload(patch) }),
   async saveConstraint(projectId: string, item: GenerationConstraint): Promise<GenerationConstraint[]> {
@@ -36,6 +58,17 @@ export const projectRepo = {
   removeConstraint: (projectId: string, id: string) => storageRequest<GenerationConstraint[]>('project.removeConstraint', { projectId, id }),
   setHidden: (id: string, hidden: boolean) => storageRequest<void>('project.setHidden', { id, hidden }),
   removeCascade: (id: string) => storageRequest<void>('project.removeCascade', { id }),
+}
+
+export const iterationTaskRepo = {
+  list: () => storageRequest<IterationTask[]>('iterationTask.list'),
+  create: (task: IterationTask) =>
+    storageRequest<IterationTask>('iterationTask.create', { task: clone(task) }),
+  save: (task: IterationTask) =>
+    storageRequest<IterationTask>('iterationTask.save', { task: clone(task) }),
+  cancel: (id: string, deleteVersions: boolean) =>
+    storageRequest<IterationTask>('iterationTask.cancel', { id, deleteVersions }),
+  remove: (id: string) => storageRequest<void>('iterationTask.remove', { id }),
 }
 
 export const pageRepo = {

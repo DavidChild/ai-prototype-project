@@ -13,6 +13,7 @@ declare module 'vue' {
   export interface GlobalComponents {
     AccountSettingsDialog: typeof import('./components/account/AccountSettingsDialog.vue')['default']
     CanvasPanel: typeof import('./components/workbench/CanvasPanel.vue')['default']
+    CreateIterationDialog: typeof import('./components/project/CreateIterationDialog.vue')['default']
     ExportMenu: typeof import('./components/workbench/ExportMenu.vue')['default']
     GlobalConstraints: typeof import('./components/workbench/GlobalConstraints.vue')['default']
     ImportPageRulesEditor: typeof import('./components/workbench/ImportPageRulesEditor.vue')['default']
@@ -44,6 +45,7 @@ declare module 'vue' {
     NGridItem: typeof import('naive-ui')['NGridItem']
     NH3: typeof import('naive-ui')['NH3']
     NH4: typeof import('naive-ui')['NH4']
+    NImage: typeof import('naive-ui')['NImage']
     NInput: typeof import('naive-ui')['NInput']
     NInputGroup: typeof import('naive-ui')['NInputGroup']
     NInputNumber: typeof import('naive-ui')['NInputNumber']

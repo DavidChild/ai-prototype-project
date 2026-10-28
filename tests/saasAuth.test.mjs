@@ -256,6 +256,13 @@ test('AI providers are tenant isolated, platform channels are shared and token s
   assert.equal(config.payload.result.providers.find((item) => item.id === 'tenant-deepseek').baseUrl, 'https://tenant.invalid/v1')
   const customProvider = { id: 'tenant-custom', name: '自由渠道', protocol: 'openai', baseUrl: 'https://custom.invalid/v1', apiKey: 'custom-secret', models: ['custom-model'], corsHint: 'unknown', useProxy: true }
   assert.equal((await tenant('ai.tenant.provider.upsert', { provider: customProvider })).status, 200)
+  const selfHostedProvider = { id: 'tenant-self-hosted', name: '内部模型网关', protocol: 'openai', baseUrl: 'https://models.internal/v1', apiKey: 'self-hosted-secret', models: ['internal-model'], presetId: 'new-api', corsHint: 'unknown', useProxy: true }
+  assert.equal((await tenant('ai.tenant.provider.upsert', { provider: selfHostedProvider })).status, 200)
+  config = await tenant('ai.config.get')
+  const savedSelfHosted = config.payload.result.providers.find((item) => item.id === 'tenant-self-hosted')
+  assert.equal(savedSelfHosted.name, '内部模型网关')
+  assert.equal(savedSelfHosted.baseUrl, 'https://models.internal/v1')
+  assert.deepEqual(savedSelfHosted.models, ['internal-model'])
   await tenant('ai.tenant.selection.update', { modelSelection: { analysis: { providerId: 'platform-openai', model: 'gpt-5.1' }, generation: { providerId: 'tenant-deepseek', model: 'deepseek-chat' } } })
   config = await tenant('ai.config.get')
   assert.deepEqual(new Set(config.payload.result.providers.map((item) => item.source)), new Set(['platform', 'tenant']))

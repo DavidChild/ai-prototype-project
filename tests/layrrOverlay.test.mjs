@@ -86,6 +86,23 @@ test('workspace toasts sit above the editor bar at the top and wrap long error t
   assert.doesNotMatch(adapted, /el\.innerHTML = `<i class="\$\{ic\}"><\/i><span>\$\{msg\}<\/span>`/)
 })
 
+test('workspace editor bar uses a stable shadow without backdrop compositing', () => {
+  const adapted = adaptLayrrWorkspaceOverlay(original)
+  assert.match(adapted, /backdrop-filter:none;-webkit-backdrop-filter:none;backface-visibility:hidden/)
+  assert.match(adapted, /box-shadow:0 6px 18px rgba\(0,0,0,\.32\)/)
+  assert.match(adapted, /transition:border-color \.12s/)
+  assert.doesNotMatch(adapted, /backdrop-filter:blur\(16px\) saturate\(1\.2\)/)
+  assert.doesNotMatch(adapted, /transition:box-shadow \.12s/)
+})
+
+test('workspace edit panel provides a four-times larger responsive editing area', () => {
+  const adapted = adaptLayrrWorkspaceOverlay(original)
+  assert.match(adapted, /width:min\(640px,calc\(100vw - 32px\)\)/)
+  assert.match(adapted, /max-height:min\(560px,calc\(100vh - 72px\)\)/)
+  assert.match(adapted, /min-height:240px;max-height:480px/)
+  assert.doesNotMatch(adapted, /\.\$\{L\}-panel\{\s*display:none;width:320px;max-height:280px/)
+})
+
 test('workspace overlay localizes all primary Layrr controls and feedback', () => {
   const adapted = adaptLayrrWorkspaceOverlay(original)
   for (const text of [
@@ -105,4 +122,21 @@ test('workspace overlay localizes all primary Layrr controls and feedback', () =
     'Done!',
     'Revert to this version?',
   ]) assert.ok(!adapted.includes(text), `found untranslated text: ${text}`)
+})
+
+test('workspace overlay accepts one reference image with or without written instructions', () => {
+  const adapted = adaptLayrrWorkspaceOverlay(original)
+  assert.match(adapted, /title="上传参考图"/)
+  assert.match(adapted, /<span>上传参考图<\/span>/)
+  assert.match(adapted, /Ctrl\+V 粘贴图片/)
+  assert.match(adapted, /在选定区块的上、下、左、右追加或还原参考图内容/)
+  assert.match(adapted, /grid-template-columns:auto minmax\(0,1fr\)/)
+  assert.match(adapted, /accept="image\/png,image\/jpeg,image\/webp"/)
+  assert.match(adapted, /参考图不能超过 2 MB/)
+  assert.match(adapted, /attachments: app2\.attachments/)
+  assert.match(adapted, /typedInstruction \|\| \(app2\.attachments\?\.length/)
+  assert.match(adapted, /panel\.addEventListener\("paste"/)
+  assert.match(adapted, /event\.clipboardData\?\.items/)
+  assert.match(adapted, /imageItem\?\.getAsFile\(\)/)
+  assert.match(adapted, /clearEditAttachments2\(\)/)
 })

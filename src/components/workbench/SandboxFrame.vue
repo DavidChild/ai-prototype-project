@@ -12,6 +12,7 @@ import {
 import {
   checkAnnotationQuality,
   supplementAnnotationFromQuality,
+  supplementGeneratedAnnotation,
 } from '@/services/generation/checkAnnotationQuality'
 import {
   generateElementAnnotation,
@@ -237,6 +238,39 @@ async function handleRemarqMessage(event: MessageEvent) {
       }
       return
     }
+    if (data.kind === 'supplementElementDraft') {
+      const page = wb.pages.find((candidate) => candidate.id === props.pageId)
+      const project = wb.project
+      const resolved = settings.resolveModel('generation', project?.modelOverride)
+      if (!page || !project || !resolved) throw new Error('请先配置可用的生成模型')
+      const payload = data.payload as {
+        annotation: QualityCheckInput
+        focusAreas?: string[]
+        instruction?: string
+      }
+      const controller = new AbortController()
+      qualityControllers.add(controller)
+      try {
+        const result = await supplementGeneratedAnnotation({
+          ...resolved,
+          projectName: project.name,
+          projectOverview: project.analysis?.overview,
+          pageName: page.spec.name,
+          pageDescription: page.spec.description,
+          platform: project.platform,
+          annotation: payload.annotation,
+          focusAreas: payload.focusAreas,
+          instruction: payload.instruction,
+          signal: controller.signal,
+        })
+        if (wb.project?.id !== project.id || wb.selectedPageId !== page.id)
+          throw new Error('页面已切换')
+        reply(frameWindow, data.requestId, { ok: true, result })
+      } finally {
+        qualityControllers.delete(controller)
+      }
+      return
+    }
     if (data.kind === 'store') {
       if (!props.pageId) throw new Error('页面标识缺失')
       await wb.savePageAnnotations(props.pageId, data.payload as AnnotationStore)
@@ -257,6 +291,7 @@ async function handleRemarqMessage(event: MessageEvent) {
           projectOverview: project.analysis?.overview,
           pageName: page.spec.name,
           pageDescription: page.spec.description,
+          platform: project.platform,
           annotation: data.payload as QualityCheckInput,
           signal: controller.signal,
         })
@@ -276,6 +311,8 @@ async function handleRemarqMessage(event: MessageEvent) {
       const payload = data.payload as {
         annotation: QualityCheckInput
         qualityCheck: QualityCheck
+        focusAreas?: string[]
+        instruction?: string
       }
       const controller = new AbortController()
       qualityControllers.add(controller)
@@ -286,8 +323,11 @@ async function handleRemarqMessage(event: MessageEvent) {
           projectOverview: project.analysis?.overview,
           pageName: page.spec.name,
           pageDescription: page.spec.description,
+          platform: project.platform,
           annotation: payload.annotation,
           qualityCheck: payload.qualityCheck,
+          focusAreas: payload.focusAreas,
+          instruction: payload.instruction,
           signal: controller.signal,
         })
         if (wb.project?.id !== project.id || wb.selectedPageId !== page.id)

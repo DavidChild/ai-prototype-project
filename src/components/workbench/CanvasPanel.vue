@@ -38,9 +38,22 @@ const dismissedGenerationErrors = new Set<string>()
 let throttleTimer: number | undefined
 
 function requestRegenerate() {
-  if (!wb.selectedPage) return
+  const page = wb.selectedPage
+  if (!page) return
+  if (wb.refining) {
+    message.warning('AI 正在微调当前页面，请完成或停止微调后再生成')
+    return
+  }
+  if (wb.localEditingPageId === page.id) {
+    message.warning('手动局部编辑正在处理或保存当前页面，请完成后再生成')
+    return
+  }
+  if (['generating', 'queued'].includes(page.genStatus)) {
+    message.info('当前页面已在生成队列中')
+    return
+  }
   if (!wb.selectedHtml) {
-    wb.regenerateSelected()
+    if (!wb.regenerateSelected()) message.warning('当前页面未能加入生成队列，请稍后重试')
     return
   }
   dialog.warning({
@@ -48,7 +61,9 @@ function requestRegenerate() {
     content: '重新生成会覆盖当前页面现有的 AI 原型内容，但不会删除页面配置和历史版本。是否继续？',
     positiveText: '继续生成',
     negativeText: '取消',
-    onPositiveClick: () => wb.regenerateSelected(),
+    onPositiveClick: () => {
+      if (!wb.regenerateSelected()) message.warning('当前页面未能加入生成队列，请稍后重试')
+    },
   })
 }
 
@@ -192,7 +207,6 @@ watch(previewMode, (mode) => {
           size="tiny"
           secondary
           type="primary"
-          :disabled="wb.localEditingPageId === wb.selectedPage.id || wb.refining"
           @click="requestRegenerate"
         >
           {{ wb.selectedHtml ? '重新生成' : '生成' }}
@@ -338,7 +352,7 @@ watch(previewMode, (mode) => {
         <div class="center">
           <n-empty description="该页面还未生成">
             <template #extra>
-              <n-button v-if="auth.canEdit" type="primary" @click="wb.regenerateSelected()">立即生成</n-button>
+              <n-button v-if="auth.canEdit" type="primary" @click="requestRegenerate">立即生成</n-button>
             </template>
           </n-empty>
         </div>

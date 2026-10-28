@@ -2,7 +2,7 @@ import { computed, reactive, ref } from 'vue'
 import { acceptHMRUpdate, defineStore } from 'pinia'
 import { nanoid } from 'nanoid'
 import { normalizePageImportModificationRules, type PageSpec } from '@/types/analysis'
-import type { Page, PageVersion } from '@/types/page'
+import type { Page, PageVersion, PageVersionSource } from '@/types/page'
 import type { ExtractedImage } from '@/types/parsing'
 import type { Project } from '@/types/project'
 import type { GenerationConstraint } from '@/types/generationConstraint'
@@ -41,7 +41,13 @@ function plainClone<T>(value: T): T {
 }
 
 type GenerationOutput =
-  | { kind: 'single'; html: string }
+  | {
+      kind: 'single'
+      html: string
+      source: PageVersionSource
+      feedbackText?: string
+      iterationInitial?: boolean
+    }
   | {
       kind: 'related'
       changes: RelatedPageChange[]
@@ -367,6 +373,9 @@ export const useWorkbenchStore = defineStore('workbench', () => {
               : undefined,
             importedPages,
             generationMode: page.spec.generationMode ?? 'current',
+            iterationRequirement: page.iterationInitialized
+              ? undefined
+              : proj.iterationRequirement,
           },
           maxTokens: settings.genParams.maxTokens,
           temperature: settings.genParams.temperature,
@@ -374,6 +383,61 @@ export const useWorkbenchStore = defineStore('workbench', () => {
           signal,
           onDelta,
           onReasoningDelta,
+        }
+        const iterationChange = page.spec.iterationChange
+        const iterationRequirement = proj.iterationRequirement
+        const currentHtml = htmlByPage.get(page.id)
+        if (
+          iterationChange?.action === 'update' &&
+          iterationRequirement &&
+          !page.iterationInitialized &&
+          currentHtml
+        ) {
+          const related = iterationRequirement.relatedPages.filter((item) =>
+            iterationChange.relatedPageIds.includes(item.pageId),
+          )
+          const feedback = [
+            `【${proj.iteration ?? '当前版本'} 初始需求变更】`,
+            iterationRequirement.productNature
+              ? `目标端性质：${iterationRequirement.productNature}`
+              : '',
+            `必须基于当前复制自 ${iterationRequirement.sourceIteration} 的旧页面做增量修改，未被需求涉及的结构、功能和视觉保持原样。`,
+            `当前页变更原因：${iterationChange.reason}`,
+            `版本需求：${iterationRequirement.text.slice(0, 12000)}`,
+            related.length
+              ? `同步关联的其他端页面（只用于业务一致性，不照搬端侧布局）：\n${related
+                  .map(
+                    (item) =>
+                      `- ${item.projectName} / ${item.iteration} / ${item.pageName}：${item.description || '无页面描述'}${item.blocks.length ? `；区块：${item.blocks.join('、')}` : ''}`,
+                  )
+                  .join('\n')}`
+              : '',
+          ]
+            .filter(Boolean)
+            .join('\n')
+          return refinePageHtml({
+            provider: resolved.provider,
+            model: resolved.model,
+            platform: proj.platform,
+            styleSpec: proj.styleSpec,
+            currentHtml,
+            feedback,
+            constraints: page.spec.constraints ? plainClone(page.spec.constraints) : undefined,
+            importedPages,
+            generationMode: 'current',
+            maxTokens: settings.genParams.maxTokens,
+            temperature: settings.genParams.temperature,
+            tailwindCdnUrl: settings.genParams.tailwindCdnUrl,
+            signal,
+            onDelta,
+            onReasoningDelta,
+          }).then((html) => ({
+            kind: 'single' as const,
+            html,
+            source: 'refine' as const,
+            feedbackText: `${proj.iteration ?? '当前版本'} 初始需求变更：${iterationChange.reason}`,
+            iterationInitial: true,
+          }))
         }
         if (page.spec.generationMode === 'smart-related') {
           const allowedUpdateIds = [
@@ -392,7 +456,16 @@ export const useWorkbenchStore = defineStore('workbench', () => {
             baselines,
           }))
         }
-        return generatePageHtml(input).then((html) => ({ kind: 'single' as const, html }))
+        const iterationInitial = !!iterationChange && !page.iterationInitialized
+        return generatePageHtml(input).then((html) => ({
+          kind: 'single' as const,
+          html,
+          source: 'generate' as const,
+          feedbackText: iterationInitial
+            ? `${proj.iteration ?? '当前版本'} 初始需求变更：${iterationChange.reason}`
+            : undefined,
+          iterationInitial,
+        }))
       },
       callbacks: {
         onStatus: (id, status, error) => {
@@ -409,7 +482,12 @@ export const useWorkbenchStore = defineStore('workbench', () => {
         onSuccess: async (pageId, result) => {
           if (sequence !== loadSequence || !pageOf(pageId)) return
           if (result.kind === 'single') {
-            const version = await versionRepo.add(pageId, result.html, 'generate')
+            const version = await versionRepo.add(
+              pageId,
+              result.html,
+              result.source,
+              result.feedbackText,
+            )
             if (sequence !== loadSequence) return
             htmlByPage.set(pageId, result.html)
             const page = pageOf(pageId)
@@ -418,6 +496,10 @@ export const useWorkbenchStore = defineStore('workbench', () => {
               page.errorMessage = undefined
               page.currentVersionId = version.id
               page.reviewPending = true
+              if (result.iterationInitial) {
+                page.iterationInitialized = true
+                await pageRepo.update(page.id, { iterationInitialized: true })
+              }
             }
           } else {
             await applyRelatedGeneration(pageId, result, sequence)
@@ -475,8 +557,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     }
   }
 
-  function generatePages(pageIds: string[]): void {
-    if (!scheduler) return
+  function generatePages(pageIds: string[]): number {
+    if (!scheduler) return 0
     const targets = pageIds
       .map((id) => pageOf(id))
       .filter(
@@ -487,10 +569,11 @@ export const useWorkbenchStore = defineStore('workbench', () => {
           !scheduler!.isActive(p.id),
       )
     if (targets.length) scheduler.enqueue(targets)
+    return targets.length
   }
 
-  function regenerateSelected(): void {
-    if (selectedPageId.value) generatePages([selectedPageId.value])
+  function regenerateSelected(): boolean {
+    return selectedPageId.value ? generatePages([selectedPageId.value]) > 0 : false
   }
 
   function retryFailed(): void {

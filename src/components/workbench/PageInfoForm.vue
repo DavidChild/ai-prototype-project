@@ -33,6 +33,7 @@ let descriptionController: AbortController | null = null
 let descriptionSequence = 0
 let uploadSequence = 0
 const referenceModes = [
+  { label: '1:1 还原参考图', value: 'exact' },
   { label: '高度还原参考图', value: 'faithful' },
   { label: '在参考图基础上创新', value: 'creative' },
 ]
@@ -55,6 +56,14 @@ const generationLocked = computed(
     wb.localEditingPageId === wb.selectedPageId ||
     ['generating', 'queued'].includes(wb.selectedPage?.genStatus ?? ''),
 )
+const generationLockReason = computed(() => {
+  if (wb.refining) return 'AI 正在微调当前页面，请完成或停止微调后再生成'
+  if (wb.localEditingPageId === wb.selectedPageId)
+    return '手动局部编辑正在处理或保存当前页面，请完成后再生成'
+  if (['generating', 'queued'].includes(wb.selectedPage?.genStatus ?? ''))
+    return '当前页面已在生成队列中，请等待完成或先取消生成'
+  return ''
+})
 const typeLockReason = computed(() =>
   wb.selectedPage ? pageTypeLockReason(wb.selectedPage, !!wb.selectedHtml) : '',
 )
@@ -119,7 +128,8 @@ async function pickReference(event: Event) {
       base64,
       width: image.width,
       height: image.height,
-      mode: previous?.mode ?? 'faithful',
+      mode: previous?.mode ?? 'exact',
+      useProjectTone: previous?.useProjectTone ?? false,
       innovation: previous?.innovation ?? 0.3,
     }
   } catch (error) {
@@ -331,7 +341,11 @@ const dirty = computed(() => {
 })
 
 async function save(regenerate: boolean, confirmed = false) {
-  if (saving.value || uploadingReference.value || (regenerate && generationLocked.value)) return
+  if (saving.value || uploadingReference.value) return
+  if (regenerate && generationLocked.value) {
+    message.warning(generationLockReason.value || '当前页面暂时不能生成，请稍后重试')
+    return
+  }
   if (regenerate && wb.selectedHtml && !confirmed) {
     dialog.warning({
       title: '确认保存并重新生成',
@@ -373,7 +387,7 @@ async function save(regenerate: boolean, confirmed = false) {
       wb.project?.id === projectId &&
       wb.selectedPageId === pageId
     )
-      wb.regenerateSelected()
+      if (!wb.regenerateSelected()) message.warning('页面配置已保存，但当前页面未能加入生成队列，请稍后重试')
   } catch (error) {
     message.error(error instanceof Error ? error.message : '保存失败，请重试')
   } finally {
@@ -392,228 +406,254 @@ async function save(regenerate: boolean, confirmed = false) {
     />
     <template v-else>
       <n-form label-placement="top" size="small" :disabled="saving">
-        <n-form-item label="页面名称">
-          <n-input v-model:value="form.name" />
-        </n-form-item>
-        <n-form-item label="菜单层级">
-          <n-space vertical size="small" style="width: 100%">
-            <n-select
-              v-model:value="parentChoice"
-              :options="parentOptions"
-              :disabled="wb.hierarchySaving"
-            />
-            <n-text depth="3" style="font-size: 11px">
-              调整菜单层级时，全部下级页面会一起移动
-            </n-text>
-          </n-space>
-        </n-form-item>
-        <n-form-item label="菜单类型">
-          <n-space vertical size="small">
-            <n-checkbox
-              v-model:checked="form.groupOnly"
-              :disabled="!!typeLockReason || wb.hierarchySaving"
-            >
-              仅作导航分组，不生成页面
-            </n-checkbox>
-            <n-text depth="3" style="font-size: 11px">
-              {{ typeLockReason || '勾选后仅作为菜单，保留下级页面，不生成独立页面' }}
-            </n-text>
-          </n-space>
-        </n-form-item>
-        <n-form-item>
-          <template #label>
-            <div class="field-label">
-              <span>页面描述</span>
-              <n-button
-                size="tiny"
-                quaternary
-                type="primary"
-                :loading="descriptionGenerating"
-                :disabled="saving || descriptionGenerating || !wb.selectedPage"
-                @click="requestInferDescription"
-              >
-                AI 推断
-              </n-button>
-            </div>
-          </template>
-          <n-input v-model:value="form.description" type="textarea" :rows="3" />
-        </n-form-item>
-        <n-form-item v-if="!form.groupOnly" label="页面参考图">
-          <div class="reference-design">
-            <div v-if="form.referenceDesign" class="reference-row">
-              <img
-                class="reference-thumb"
-                :src="referencePreview"
-                :alt="form.referenceDesign.name"
-              />
-              <div class="reference-settings">
-                <div class="reference-name" :title="form.referenceDesign.name">
-                  {{ form.referenceDesign.name }}
-                </div>
+        <n-collapse :default-expanded-names="['page']" class="build-groups">
+          <n-collapse-item title="页面与菜单" name="page">
+            <n-form-item label="页面名称">
+              <n-input v-model:value="form.name" />
+            </n-form-item>
+            <n-form-item label="菜单层级">
+              <n-space vertical size="small" style="width: 100%">
                 <n-select
-                  v-model:value="form.referenceDesign.mode"
-                  :options="referenceModes"
-                  :disabled="uploadingReference || saving"
-                  size="small"
-                  aria-label="参考图设计策略"
+                  v-model:value="parentChoice"
+                  :options="parentOptions"
+                  :disabled="wb.hierarchySaving"
                 />
-                <n-space size="small" style="margin-top: 6px">
-                  <n-button
-                    size="tiny"
-                    :disabled="uploadingReference || saving"
-                    @click="referenceFile?.click()"
-                    >更换</n-button
-                  >
+                <n-text depth="3" style="font-size: 11px">
+                  调整菜单层级时，全部下级页面会一起移动
+                </n-text>
+              </n-space>
+            </n-form-item>
+            <n-form-item label="菜单类型">
+              <n-space vertical size="small">
+                <n-checkbox
+                  v-model:checked="form.groupOnly"
+                  :disabled="!!typeLockReason || wb.hierarchySaving"
+                >
+                  仅作导航分组，不生成页面
+                </n-checkbox>
+                <n-text depth="3" style="font-size: 11px">
+                  {{ typeLockReason || '勾选后仅作为菜单，保留下级页面，不生成独立页面' }}
+                </n-text>
+              </n-space>
+            </n-form-item>
+            <n-form-item v-if="!form.groupOnly">
+              <template #label>
+                <div class="field-label">
+                  <span>页面描述</span>
                   <n-button
                     size="tiny"
                     quaternary
-                    :disabled="uploadingReference || saving"
-                    @click="removeReference"
-                    >移除</n-button
+                    type="primary"
+                    :loading="descriptionGenerating"
+                    :disabled="saving || descriptionGenerating || !wb.selectedPage"
+                    @click="requestInferDescription"
                   >
-                </n-space>
-              </div>
-            </div>
-            <n-button
-              v-else
-              size="small"
-              block
-              :loading="uploadingReference"
-              :disabled="saving"
-              @click="referenceFile?.click()"
-            >
-              上传一张参考图
-            </n-button>
-            <input
-              ref="referenceFile"
-              type="file"
-              accept="image/png,image/jpeg,image/webp"
-              style="display: none"
-              @change="pickReference"
-            />
-            <template v-if="form.referenceDesign?.mode === 'creative'">
-              <div class="innovation-heading">
-                <span>创新值</span>
-                <n-input-number
-                  v-model:value="form.referenceDesign.innovation"
-                  :min="0"
-                  :max="1"
-                  :step="0.05"
-                  :precision="2"
-                  :clearable="false"
-                  :disabled="uploadingReference || saving"
-                  size="tiny"
-                  style="width: 100px"
-                  aria-label="创新值，0 到 1"
+                    AI 推断
+                  </n-button>
+                </div>
+              </template>
+              <n-input v-model:value="form.description" type="textarea" :rows="3" />
+            </n-form-item>
+          </n-collapse-item>
+
+          <n-collapse-item v-if="!form.groupOnly" title="视觉与内容" name="visual">
+            <n-form-item label="页面参考图">
+              <div class="reference-design">
+                <div v-if="form.referenceDesign" class="reference-row">
+                  <n-image
+                    class="reference-thumb"
+                    :src="referencePreview"
+                    :alt="form.referenceDesign.name"
+                    :width="72"
+                    :height="88"
+                    object-fit="contain"
+                    title="点击放大参考图"
+                  />
+                  <div class="reference-settings">
+                    <div class="reference-name" :title="form.referenceDesign.name">
+                      {{ form.referenceDesign.name }}
+                    </div>
+                    <n-select
+                      v-model:value="form.referenceDesign.mode"
+                      :options="referenceModes"
+                      :disabled="uploadingReference || saving"
+                      size="small"
+                      aria-label="参考图设计策略"
+                    />
+                    <n-checkbox
+                      v-if="form.referenceDesign.mode === 'exact'"
+                      v-model:checked="form.referenceDesign.useProjectTone"
+                      class="reference-tone-option"
+                    >
+                      使用项目色调
+                    </n-checkbox>
+                    <n-space size="small" style="margin-top: 6px">
+                      <n-button
+                        size="tiny"
+                        :disabled="uploadingReference || saving"
+                        @click="referenceFile?.click()"
+                        >更换</n-button
+                      >
+                      <n-button
+                        size="tiny"
+                        quaternary
+                        :disabled="uploadingReference || saving"
+                        @click="removeReference"
+                        >移除</n-button
+                      >
+                    </n-space>
+                  </div>
+                </div>
+                <n-button
+                  v-else
+                  size="small"
+                  block
+                  :loading="uploadingReference"
+                  :disabled="saving"
+                  @click="referenceFile?.click()"
+                >
+                  上传一张参考图
+                </n-button>
+                <input
+                  ref="referenceFile"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  style="display: none"
+                  @change="pickReference"
                 />
+                <template v-if="form.referenceDesign?.mode === 'creative'">
+                  <div class="innovation-heading">
+                    <span>创新值</span>
+                    <n-input-number
+                      v-model:value="form.referenceDesign.innovation"
+                      :min="0"
+                      :max="1"
+                      :step="0.05"
+                      :precision="2"
+                      :clearable="false"
+                      :disabled="uploadingReference || saving"
+                      size="tiny"
+                      style="width: 100px"
+                      aria-label="创新值，0 到 1"
+                    />
+                  </div>
+                  <n-slider
+                    v-model:value="form.referenceDesign.innovation"
+                    :min="0"
+                    :max="1"
+                    :step="0.05"
+                    :disabled="uploadingReference || saving"
+                    aria-label="参考图布局创新程度"
+                  />
+                  <n-text depth="3" class="reference-hint"
+                    >0 更忠实布局，1 更多布局创新；色调风格不变。</n-text
+                  >
+                </template>
+                <n-text depth="3" class="reference-hint">
+                  {{
+                    form.referenceDesign?.mode === 'exact'
+                      ? form.referenceDesign.useProjectTone
+                        ? '1:1 还原保持内容和视觉结构不变，仅将颜色及明暗色调映射为项目色调。'
+                        : '1:1 还原严格复刻参考图的内容、布局和视觉样式，不主动调整。'
+                      : '高度还原与创新模式均沿用项目及已有原型的风格色调。'
+                  }}
+                  支持 PNG / JPG / WebP，单张不超过 10 MB，需支持图片的生成模型。
+                </n-text>
               </div>
-              <n-slider
-                v-model:value="form.referenceDesign.innovation"
-                :min="0"
-                :max="1"
-                :step="0.05"
-                :disabled="uploadingReference || saving"
-                aria-label="参考图布局创新程度"
-              />
-              <n-text depth="3" class="reference-hint"
-                >0 更忠实布局，1 更多布局创新；色调风格不变。</n-text
-              >
-            </template>
-            <n-text depth="3" class="reference-hint">
-              还原与创新均沿用项目及已有原型的风格色调。支持 PNG / JPG / WebP，单张不超过 10
-              MB，需支持图片的生成模型。
-            </n-text>
-          </div>
-        </n-form-item>
-        <n-form-item v-if="!form.groupOnly" label="AI 生成约束">
-          <PageConstraintEditor :key="form.id" v-model="form.constraints" :disabled="saving" />
-        </n-form-item>
-        <n-form-item v-if="!form.groupOnly" label="构建方式">
-          <div class="generation-mode">
-            <n-select
-              v-model:value="form.generationMode"
-              :options="generationModes"
-              :disabled="saving"
-            />
-            <n-text depth="3" class="import-hint">
-              {{
-                form.generationMode === 'from-import'
-                  ? '以首个引入页为视觉和结构基底，生成当前业务页。'
-                  : form.generationMode === 'smart-related'
-                    ? 'AI 可决定更新当前页、修改已授权引入页，或新增必要的关联逻辑页。'
-                    : '只生成当前页面；引入页仅提供业务上下文。'
-              }}
-            </n-text>
-          </div>
-        </n-form-item>
-        <n-form-item v-if="!form.groupOnly" label="引入页">
-          <div class="imported-pages">
-            <div
-              v-for="(item, index) in form.importedPages ?? []"
-              :key="index"
-              class="imported-page-row"
-              :class="{
-                editable:
-                  item.access === 'editable' ||
-                  (form.generationMode === 'from-import' && index === 0),
-              }"
-            >
-              <n-tree-select
-                :value="item.pageId"
-                :options="importedPageTreeOptions(item.pageId)"
-                :disabled="saving"
-                filterable
-                show-line
-                show-path
-                separator=" › "
-                placeholder="搜索或按层级选择页面"
-                aria-label="选择引入页"
-                @update:value="changeImportedPage(item, $event)"
-              />
-              <n-select
-                v-model:value="item.access"
-                :options="importAccessOptions"
-                :disabled="saving || form.generationMode !== 'smart-related'"
-                aria-label="引入页修改权限"
-              />
-              <ImportPageRulesEditor
-                v-if="item.access === 'editable' || (form.generationMode === 'from-import' && index === 0)"
-                v-model="item.modificationRules"
-                :for-new-page="form.generationMode === 'from-import' && index === 0"
-                :disabled="saving"
-              />
-              <n-button
-                quaternary
-                size="small"
-                :disabled="saving"
-                title="移除引入页"
-                @click="removeImportedPage(index)"
-              >
-                ×
-              </n-button>
-            </div>
-            <n-button
-              size="small"
-              dashed
-              block
-              :disabled="saving || !availableImportedPages.length"
-              @click="addImportedPage"
-            >
-              + 添加引入页
-            </n-button>
-            <n-text depth="3" class="import-hint">
-              引入页会自动携带给 AI 说明业务上下关系。可修改引入页默认保护框架和导航，点击“限制”可配置允许的修改范围；未配置的页面始终不能被修改。
-            </n-text>
-          </div>
-        </n-form-item>
-        <n-form-item label="内容区块（从上到下）">
-          <n-dynamic-tags v-model:value="form.blocks" />
-        </n-form-item>
+            </n-form-item>
+            <n-form-item label="内容区块（从上到下）">
+              <n-dynamic-tags v-model:value="form.blocks" />
+            </n-form-item>
+          </n-collapse-item>
+
+          <n-collapse-item v-if="!form.groupOnly" title="AI 构建规则" name="generation">
+            <n-form-item label="AI 生成约束">
+              <PageConstraintEditor :key="form.id" v-model="form.constraints" :disabled="saving" />
+            </n-form-item>
+            <n-form-item label="构建方式">
+              <div class="generation-mode">
+                <n-select
+                  v-model:value="form.generationMode"
+                  :options="generationModes"
+                  :disabled="saving"
+                />
+                <n-text depth="3" class="import-hint">
+                  {{
+                    form.generationMode === 'from-import'
+                      ? '以首个引入页为视觉和结构基底，生成当前业务页。'
+                      : form.generationMode === 'smart-related'
+                        ? 'AI 可决定更新当前页、修改已授权引入页，或新增必要的关联逻辑页。'
+                        : '只生成当前页面；引入页仅提供业务上下文。'
+                  }}
+                </n-text>
+              </div>
+            </n-form-item>
+            <n-form-item label="引入页">
+              <div class="imported-pages">
+                <div
+                  v-for="(item, index) in form.importedPages ?? []"
+                  :key="index"
+                  class="imported-page-row"
+                  :class="{
+                    editable:
+                      item.access === 'editable' ||
+                      (form.generationMode === 'from-import' && index === 0),
+                  }"
+                >
+                  <n-tree-select
+                    :value="item.pageId"
+                    :options="importedPageTreeOptions(item.pageId)"
+                    :disabled="saving"
+                    filterable
+                    show-line
+                    show-path
+                    separator=" › "
+                    placeholder="搜索或按层级选择页面"
+                    aria-label="选择引入页"
+                    @update:value="changeImportedPage(item, $event)"
+                  />
+                  <n-select
+                    v-model:value="item.access"
+                    :options="importAccessOptions"
+                    :disabled="saving || form.generationMode !== 'smart-related'"
+                    aria-label="引入页修改权限"
+                  />
+                  <ImportPageRulesEditor
+                    v-if="item.access === 'editable' || (form.generationMode === 'from-import' && index === 0)"
+                    v-model="item.modificationRules"
+                    :for-new-page="form.generationMode === 'from-import' && index === 0"
+                    :disabled="saving"
+                  />
+                  <n-button
+                    quaternary
+                    size="small"
+                    :disabled="saving"
+                    title="移除引入页"
+                    @click="removeImportedPage(index)"
+                  >
+                    ×
+                  </n-button>
+                </div>
+                <n-button
+                  size="small"
+                  dashed
+                  block
+                  :disabled="saving || !availableImportedPages.length"
+                  @click="addImportedPage"
+                >
+                  + 添加引入页
+                </n-button>
+                <n-text depth="3" class="import-hint">
+                  引入页会自动携带给 AI 说明业务上下关系。可修改引入页默认保护框架和导航，点击“限制”可配置允许的修改范围；未配置的页面始终不能被修改。
+                </n-text>
+              </div>
+            </n-form-item>
+          </n-collapse-item>
+        </n-collapse>
       </n-form>
-      <n-space vertical size="small">
+      <div class="build-actions">
         <n-button
           size="small"
-          block
           :loading="saving"
           :disabled="!dirty || uploadingReference || saving || wb.hierarchySaving"
           @click="save(false)"
@@ -621,7 +661,6 @@ async function save(regenerate: boolean, confirmed = false) {
         >
         <n-button
           size="small"
-          block
           type="primary"
           secondary
           :loading="saving"
@@ -629,19 +668,18 @@ async function save(regenerate: boolean, confirmed = false) {
             !!form.groupOnly ||
             uploadingReference ||
             saving ||
-            generationLocked ||
             wb.hierarchySaving
           "
           @click="save(true)"
         >
           {{ wb.selectedHtml ? '保存并重新生成' : '保存并生成页面' }}
         </n-button>
-        <n-text depth="3" style="font-size: 11px">{{
+        <n-text depth="3" class="build-actions-hint">{{
           form.groupOnly
             ? '导航分组不生成页面，点击保存即可生效'
             : '修改页面信息后需重新生成才会体现在设计图中'
         }}</n-text>
-      </n-space>
+      </div>
     </template>
   </div>
 </template>
@@ -651,6 +689,40 @@ async function save(regenerate: boolean, confirmed = false) {
   padding: 14px;
   height: 100%;
   overflow: auto;
+}
+
+.build-groups {
+  margin-bottom: 12px;
+}
+
+.build-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.build-actions-hint {
+  grid-column: 1 / -1;
+  font-size: 11px;
+}
+
+:deep(.build-groups .n-collapse-item) {
+  margin-bottom: 8px;
+  border: 1px solid var(--qp-border);
+  border-radius: 6px;
+  background: var(--qp-pane);
+}
+
+:deep(.build-groups .n-collapse-item__header) {
+  padding: 10px;
+}
+
+:deep(.build-groups .n-collapse-item__content-inner) {
+  padding: 2px 10px 4px;
+}
+
+:deep(.build-groups .n-form-item:last-child) {
+  margin-bottom: 4px;
 }
 
 .field-label {
@@ -673,12 +745,11 @@ async function save(regenerate: boolean, confirmed = false) {
 }
 
 .reference-thumb {
-  width: 72px;
-  height: 88px;
   flex-shrink: 0;
-  object-fit: contain;
   border: 1px solid var(--qp-border);
   border-radius: 6px;
+  overflow: hidden;
+  cursor: zoom-in;
 }
 
 .reference-settings {
@@ -692,6 +763,11 @@ async function save(regenerate: boolean, confirmed = false) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.reference-tone-option {
+  margin-top: 8px;
+  font-size: 12px;
 }
 
 .innovation-heading {

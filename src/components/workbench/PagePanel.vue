@@ -11,6 +11,8 @@ import { useRouter } from 'vue-router'
 import { importProjectPackage } from '@/services/storage/projectPackage'
 import { normalizeImage } from '@/services/parsing/imageOps'
 import { imageToHtml } from '@/services/generation/imageToHtml'
+import { extractPrototypeStyle } from '@/services/generation/prototypeStyle'
+import { buildStyleFragment } from '@/prompts/stylePrompt'
 
 const wb = useWorkbenchStore()
 const auth = useAuthStore()
@@ -35,6 +37,7 @@ const batchShow = ref(false)
 const batchFileInput = ref<HTMLInputElement | null>(null)
 const batchItems = ref<BatchImportItem[]>([])
 const batchParentId = ref('')
+const batchUseProjectTone = ref(false)
 const batchImporting = ref(false)
 let batchController: AbortController | null = null
 
@@ -111,6 +114,7 @@ const selectedBatchParentKey = computed({
 const batchDoneCount = computed(
   () => batchItems.value.filter((item) => item.status === 'done').length,
 )
+const batchHasImages = computed(() => batchItems.value.some((item) => item.kind === 'image'))
 
 function batchStatusLabel(status: BatchImportStatus): string {
   return {
@@ -130,6 +134,7 @@ function filePageName(filename: string): string {
 function openBatchImport() {
   batchItems.value = []
   batchParentId.value = ''
+  batchUseProjectTone.value = false
   batchShow.value = true
 }
 
@@ -193,20 +198,37 @@ async function originalImageSize(file: File): Promise<{ width: number; height: n
 }
 
 async function runBatchImport() {
-  const projectId = wb.project?.id
+  const project = wb.project
   const pending = batchItems.value.filter((item) => item.status !== 'done')
-  if (!projectId || !pending.length || batchImporting.value) return
+  if (!project || !pending.length || batchImporting.value) return
+  const projectId = project.id
   if (pending.some((item) => !item.name.trim())) {
     message.warning('请补全所有页面名称')
     return
   }
   const resolved = pending.some((item) => item.kind === 'image')
-    ? settings.resolveModel('generation', wb.project?.modelOverride)
+    ? settings.resolveModel('generation', project.modelOverride)
     : undefined
   if (pending.some((item) => item.kind === 'image') && !resolved) {
     message.error('图片导入需要先配置支持图片输入的页面生成模型')
     return
   }
+  const projectTone = batchUseProjectTone.value
+    ? {
+        designSpec: buildStyleFragment(project.styleSpec, project.platform),
+        prototypeStyle: (() => {
+          const stylePage = wb.pages.find(
+            (page) => !page.spec.groupOnly && wb.htmlByPage.has(page.id),
+          )
+          return stylePage
+            ? {
+                pageName: stylePage.spec.name,
+                summary: extractPrototypeStyle(wb.htmlByPage.get(stylePage.id)!),
+              }
+            : undefined
+        })(),
+      }
+    : undefined
   const controller = new AbortController()
   batchController = controller
   batchImporting.value = true
@@ -228,8 +250,10 @@ async function runBatchImport() {
           ...resolved!,
           image: normalized.blob,
           name: item.name.trim(),
-          instruction:
-            '严格按照参考图内容和样式进行 1:1 高保真还原，不允许美化、简化、改写、增删或移动任何可见内容。保持原图尺寸比例、布局、间距、颜色、字体、文字、图标和视觉层级，所有元素使用可编辑 HTML/CSS 实现。',
+          instruction: batchUseProjectTone.value
+            ? '严格按照参考图进行 1:1 高保真还原。仅将颜色、明暗模式和对比度映射为当前项目色调；原图内容、尺寸比例、布局、间距、字体、文字、图标、圆角、组件形态和视觉层级均不得改变。所有元素使用可编辑 HTML/CSS 实现。'
+            : '严格按照参考图内容和样式进行 1:1 高保真还原，不允许美化、简化、改写、增删或移动任何可见内容。保持原图尺寸比例、布局、间距、颜色、字体、文字、图标和视觉层级，所有元素使用可编辑 HTML/CSS 实现。',
+          projectTone,
           viewportWidth: size.width,
           viewportHeight: size.height,
           maxTokens: settings.genParams.maxTokens,
@@ -550,6 +574,16 @@ async function importPackage(event: Event) {
               />
             </div>
           </n-form-item>
+          <n-form-item v-if="batchHasImages" label="图片还原">
+            <div class="batch-tone-option">
+              <n-checkbox v-model:checked="batchUseProjectTone" :disabled="batchImporting">
+                使用项目色调
+              </n-checkbox>
+              <n-text depth="3">
+                仅将颜色、明暗和对比度映射为项目色调，内容、布局和组件样式仍按图片 1:1 还原
+              </n-text>
+            </div>
+          </n-form-item>
         </n-form>
 
         <div v-if="batchItems.length" class="batch-list">
@@ -768,6 +802,13 @@ async function importPackage(event: Event) {
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.batch-tone-option {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
 }
 
 .batch-list {

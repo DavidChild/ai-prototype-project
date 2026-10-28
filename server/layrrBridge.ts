@@ -16,7 +16,13 @@ import { gridstackEditorShell } from './gridstackEditor'
 const require = createRequire(import.meta.url)
 const LIMIT = 5 * 1024 * 1024
 const IDLE_SESSION_MS = 10 * 60 * 1000
-type Edit = { instruction: string; selector: string; elements?: { selector: string }[] }
+type EditAttachment = { name: string; mimeType: string; base64: string }
+type Edit = {
+  instruction: string
+  selector: string
+  elements?: { selector: string }[]
+  attachments?: EditAttachment[]
+}
 type Submission = {
   id: string
   html: string
@@ -77,6 +83,23 @@ async function body(req: IncomingMessage): Promise<Record<string, unknown>> {
 function json(res: ServerResponse, value: unknown, status = 200) {
   res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
   res.end(JSON.stringify(value))
+}
+
+function validateEditAttachments(value: unknown): EditAttachment[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.length > 1) throw new Error('一次只能携带一张参考图')
+  return value.map((item) => {
+    if (!item || typeof item !== 'object') throw new Error('参考图数据无效')
+    const input = item as Record<string, unknown>
+    const mimeType = typeof input.mimeType === 'string' ? input.mimeType : ''
+    const base64 = typeof input.base64 === 'string' ? input.base64.replace(/\s+/g, '') : ''
+    const name = typeof input.name === 'string' ? input.name.trim().slice(0, 120) : '参考图'
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(mimeType))
+      throw new Error('参考图仅支持 PNG、JPG 或 WebP')
+    if (!base64 || !/^[A-Za-z0-9+/]+={0,2}$/.test(base64) || Math.ceil(base64.length * 0.75) > 2 * 1024 * 1024)
+      throw new Error('参考图无效或超过 2 MB')
+    return { name: name || '参考图', mimeType, base64 }
+  })
 }
 
 /** Uses the official Layrr overlay, with a 小豆原型 provider/patch adapter instead of a CLI agent. */
@@ -309,7 +332,7 @@ export function layrrBridgePlugin(config: MysqlStorageConfig): Plugin {
                 previewRes.writeHead(500).end('工作区读取失败')
               }
             })
-            const wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 })
+            const wss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024 })
             server.on('upgrade', (request, socket, head) => {
               const originHost = request.headers.origin ? new URL(request.headers.origin).host : ''
               if (request.url !== `${prefix}/__layrr__/ws` || originHost !== request.headers.host) {
@@ -333,6 +356,8 @@ export function layrrBridgePlugin(config: MysqlStorageConfig): Plugin {
                       typeof edit.selector !== 'string'
                     )
                       throw new Error('无效修改请求')
+                    edit.instruction = edit.instruction.trim()
+                    edit.attachments = validateEditAttachments(edit.attachments)
                     session.job = { id: randomBytes(12).toString('hex'), edit, delivered: false }
                     session.lastResult = null
                   } catch (error) {

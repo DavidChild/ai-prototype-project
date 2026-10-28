@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import bcrypt from 'bcryptjs'
 import type { Pool, PoolConnection, RowDataPacket, ExecuteValues } from 'mysql2/promise'
 import { nanoid } from 'nanoid'
-import { getPresetEndpoint, getPresetProtocols, providerPresets } from '../src/data/providerPresets'
+import { getPresetEndpoint, getPresetProtocols, providerPresets, SELF_HOSTED_PROVIDER_PRESET_ID } from '../src/data/providerPresets'
 import type { ProviderProtocol } from '../src/types/provider'
 
 export type TenantRole = 'tenant_admin' | 'designer' | 'reviewer'
@@ -511,7 +511,7 @@ export async function dispatchSaas(pool: Pool, action: string, input: Input, req
     for(const row of allowedRows){const presetId=String(row.providerPresetId);(allowedPresetModels[presetId]??=[]).push(String(row.model))}
     return {
       providers: providerRows.map(providerDto).map((provider) => {
-        if(provider.source==='tenant'&&!provider.presetId)return provider
+        if(provider.source==='tenant'&&(!provider.presetId||provider.presetId===SELF_HOSTED_PROVIDER_PRESET_ID))return provider
         const poolProviderId=provider.presetId||`platform-${provider.id}`
         return {...provider,models:provider.models.filter((model:string)=>allowedIds.has(`${poolProviderId}:${model}`))}
       }),
@@ -536,10 +536,15 @@ export async function dispatchSaas(pool: Pool, action: string, input: Input, req
       if(!getPresetProtocols(preset).includes(protocol))throw new Error('服务商协议不符合平台预设规范')
       const endpoint=getPresetEndpoint(preset,protocol)
       if(!endpoint)throw new Error('服务商地址不符合平台预设规范')
-      const available=await availableAiModelRows(pool),allowedSet=new Set(available.filter((row)=>String(row.providerPresetId)===presetId).map((row)=>String(row.model)))
-      if(!allowedSet.size)throw new Error('该服务商尚未由平台开放')
-      if(!models.length||models.some((model:string)=>!allowedSet.has(model)))throw new Error('请选择平台为该服务商开放的模型')
-      providerName=preset.name;corsHint=preset.corsHint
+      if(presetId===SELF_HOSTED_PROVIDER_PRESET_ID){
+        if(!models.length)throw new Error('自托管 API 请至少填写一个模型')
+        corsHint=preset.corsHint
+      }else{
+        const available=await availableAiModelRows(pool),allowedSet=new Set(available.filter((row)=>String(row.providerPresetId)===presetId).map((row)=>String(row.model)))
+        if(!allowedSet.size)throw new Error('该服务商尚未由平台开放')
+        if(!models.length||models.some((model:string)=>!allowedSet.has(model)))throw new Error('请选择平台为该服务商开放的模型')
+        providerName=preset.name;corsHint=preset.corsHint
+      }
     } else if(!models.length) throw new Error('自定义服务商请至少填写一个模型')
     const now = Date.now(), cipher = apiKey ? encryptCredential(apiKey) : existing[0].credential_cipher
     await pool.execute(`INSERT INTO ai_providers (id,owner_type,owner_id,name,protocol,base_url,credential_cipher,models,preset_id,cors_hint,use_proxy,enabled,created_at,updated_at)

@@ -1,4 +1,5 @@
 import type { PageConstraints } from './generationConstraint'
+import type { PageIterationChange } from './iteration'
 
 export interface PageReferenceDesign {
   name: string
@@ -7,7 +8,9 @@ export interface PageReferenceDesign {
   base64: string
   width?: number
   height?: number
-  mode: 'faithful' | 'creative'
+  mode: 'exact' | 'faithful' | 'creative'
+  /** In exact mode only, map colors and light/dark tone to the current project. */
+  useProjectTone?: boolean
   /** Layout/detail freedom only. Project colors and visual language remain fixed. */
   innovation: number
 }
@@ -82,6 +85,8 @@ export interface PageSpec {
   /** Existing prototype pages supplied to AI as business-flow context. */
   importedPages?: PageImportReference[]
   generationMode?: PageGenerationMode
+  /** One-time AI action used to initialize a copied project iteration. */
+  iterationChange?: PageIterationChange
 }
 
 export interface RequirementAnalysis {

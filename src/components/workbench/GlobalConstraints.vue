@@ -146,7 +146,7 @@ async function save() {
     saving.value = true
     await wb.saveGlobalConstraint(draft.value, ownerProjectId)
     visible.value = false
-    message.success('全局约束已保存，可在各页面信息中选择使用')
+    message.success('全局约束已保存，可在各页面的“构建”中选择使用')
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '保存失败'
   } finally {
@@ -193,7 +193,7 @@ onBeforeUnmount(cancelGeneration)
       >
     </div>
     <p class="hint">
-      从项目 HTML 提取菜单框架、APP 底栏等可复用组件。各页面在“信息”中按需选用，未选用不会传给 AI。
+      从项目 HTML 提取菜单框架、APP 底栏等可复用组件。各页面在“构建”中按需选用，未选用不会传给 AI。
     </p>
     <n-empty
       v-if="!library.length"

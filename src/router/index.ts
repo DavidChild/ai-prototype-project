@@ -23,6 +23,8 @@ const router = createRouter({
       name: 'workbench',
       component: () => import('@/views/WorkbenchView.vue'),
     },
+    { path: '/iterations', name: 'iteration-tasks', component: () => import('@/views/IterationTasksView.vue'), meta: { iterationCreator: true } },
+    { path: '/iterations/:id', name: 'iteration-task-workbench', component: () => import('@/views/IterationTaskWorkbenchView.vue'), meta: { iterationCreator: true } },
     {
       path: '/settings',
       name: 'settings',
@@ -47,6 +49,7 @@ router.beforeEach(async (to) => {
   if (to.meta.tenantAdmin && status.user?.tenantRole !== 'tenant_admin') return '/'
   if (to.meta.operator && status.user?.platformRole !== 'platform_operator') return '/'
   if (to.name === 'project-create' && status.user?.tenantRole !== 'tenant_admin' && !status.user?.canCreateProject) return '/'
+  if (to.meta.iterationCreator && status.user?.tenantRole !== 'tenant_admin' && !status.user?.canCreateIteration) return '/'
   return true
 })
 

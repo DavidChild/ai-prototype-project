@@ -82,7 +82,8 @@ ${input.feedback || '结合页面配置补全当前页面和必要的关联业�
       system: buildPageSystemPrompt(
         styleFragment,
         input.platform,
-        !!reference,
+        reference?.mode,
+        !!reference?.useProjectTone,
         input.page.constraints?.mode === 'custom' && !!input.page.constraints.items.length,
         'related-json',
       ),

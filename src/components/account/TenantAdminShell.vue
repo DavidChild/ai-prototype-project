@@ -6,7 +6,7 @@ import { useSettingsStore } from '@/stores/settings'
 import AccountSettingsDialog from '@/components/account/AccountSettingsDialog.vue'
 
 const props = defineProps<{
-  active: 'projects' | 'team' | 'usage' | 'settings'
+  active: 'projects' | 'iterations' | 'team' | 'usage' | 'settings'
   title: string
   description: string
 }>()
@@ -48,9 +48,10 @@ async function logout() {
       </div>
       <nav class="tenant-nav" aria-label="租户后台导航">
         <button :class="{ active: active === 'projects' }" @click="openPrimary('/')"><span>▦</span><b>项目工作台</b></button>
-        <button :class="{ active: active === 'team' }" @click="openPrimary('/saas')"><span>♙</span><b>团队管理</b></button>
-        <button :class="{ active: active === 'usage' }" @click="openPrimary('/usage')"><span>◫</span><b>用量使用情况</b></button>
-        <div class="tenant-menu-group" :class="{ open: settingsExpanded, active: active === 'settings' }">
+        <button v-if="auth.canCreateIteration" :class="{ active: active === 'iterations' }" @click="openPrimary('/iterations')"><span>⇄</span><b>多端迭代</b></button>
+        <button v-if="auth.isAdmin" :class="{ active: active === 'team' }" @click="openPrimary('/saas')"><span>♙</span><b>团队管理</b></button>
+        <button v-if="auth.isAdmin" :class="{ active: active === 'usage' }" @click="openPrimary('/usage')"><span>◫</span><b>用量使用情况</b></button>
+        <div v-if="auth.isAdmin" class="tenant-menu-group" :class="{ open: settingsExpanded, active: active === 'settings' }">
           <button class="tenant-menu-trigger" :class="{ active: active === 'settings' }" :aria-expanded="settingsExpanded" @click="toggleSettingsMenu">
             <span>⚙</span><b>模型设置</b><i class="tenant-menu-arrow" aria-hidden="true">›</i>
           </button>
@@ -65,7 +66,7 @@ async function logout() {
       </nav>
       <div class="tenant-account">
         <n-avatar round size="medium">{{ userInitial }}</n-avatar>
-        <div><strong>{{ auth.user?.tenantName || '个人工作区' }}</strong><span>{{ auth.user?.displayName }} · 管理员</span></div>
+        <div><strong>{{ auth.user?.tenantName || '个人工作区' }}</strong><span>{{ auth.user?.displayName }} · {{ auth.isAdmin ? '管理员' : '设计员' }}</span></div>
       </div>
     </aside>
     <main class="tenant-main">

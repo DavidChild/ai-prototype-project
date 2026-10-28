@@ -21,6 +21,8 @@ export interface ProviderPreset {
   links?: ProviderPresetLinks
 }
 
+export const SELF_HOSTED_PROVIDER_PRESET_ID = 'new-api'
+
 export const providerProtocolLabels: Record<ProviderProtocol, string> = {
   openai: 'OpenAI 兼容',
   anthropic: 'Anthropic',
@@ -580,8 +582,8 @@ export const providerPresets: ProviderPreset[] = [
     },
   },
   {
-    id: 'new-api',
-    name: 'New API / One API（自托管）',
+    id: SELF_HOSTED_PROVIDER_PRESET_ID,
+    name: '自托管 API（New API / One API）',
     protocol: 'openai',
     baseUrl: 'http://localhost:3000/v1',
     endpoints: {

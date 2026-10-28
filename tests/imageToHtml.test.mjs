@@ -5,9 +5,24 @@ import { fileURLToPath } from 'node:url'
 const jiti = createJiti(import.meta.url, {
   alias: { '@': fileURLToPath(new URL('../src', import.meta.url)) },
 })
-const { imageToHtml, extractImageHtml } = await jiti.import(
+const { imageToHtml, extractImageHtml, buildImageToHtmlSystemPrompt } = await jiti.import(
   '../src/services/generation/imageToHtml.ts',
 )
+
+test('1:1 screenshot prompt optionally maps only project colors and tone', () => {
+  const exact = buildImageToHtmlSystemPrompt()
+  assert.match(exact, /alignment, colors, borders/)
+  assert.doesNotMatch(exact, /project tone/)
+
+  const toned = buildImageToHtmlSystemPrompt({
+    designSpec: '主色：#2563eb；浅色模式',
+    prototypeStyle: { pageName: '首页', summary: '{"themeColors":{"primary":"#2563eb"}}' },
+  })
+  assert.match(toned, /Colors, light\/dark mode and contrast are the only exception/)
+  assert.match(toned, /Do not apply project layout, spacing, typography, radius or component-shape rules/)
+  assert.match(toned, /主色：#2563eb；浅色模式/)
+  assert.match(toned, /existing-prototype-tone page="首页"/)
+})
 
 test('conversion accepts short fenced HTML and JSON wrappers but rejects prose or empty replies', () => {
   assert.equal(extractImageHtml('以下为页面：\n```html\n<div>页面</div>\n```'), '<div>页面</div>')

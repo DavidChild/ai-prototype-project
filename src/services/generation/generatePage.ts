@@ -101,7 +101,8 @@ export async function generatePageHtml(input: GeneratePageInput): Promise<string
       system: buildPageSystemPrompt(
         styleFragment,
         input.platform,
-        !!reference,
+        reference?.mode,
+        !!reference?.useProjectTone,
         input.page.constraints?.mode === 'custom' && !!input.page.constraints.items.length,
       ),
       maxTokens: input.maxTokens,
