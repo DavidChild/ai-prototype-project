@@ -1,0 +1,15 @@
+{
+  "name": "xiaodou-prototype-runtime",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "bcryptjs": "3.0.3",
+    "gridstack": "14.0.0",
+    "interactjs": "1.10.28",
+    "layrr": "2026.5.0",
+    "mysql2": "3.24.6",
+    "nanoid": "5.1.11",
+    "vite": "8.0.16",
+    "ws": "8.22.0"
+  }
+}

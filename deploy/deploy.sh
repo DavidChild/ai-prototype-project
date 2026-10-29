@@ -37,10 +37,10 @@ fi
 
 # Explicit command-line environment values have the highest priority.
 CONFIG_KEYS=(
-  DOMAIN APP_ROOT APP_USER APP_PORT MYSQL_HOST MYSQL_PORT MYSQL_USER
+  DOMAIN DOMAIN_ALIASES APP_ROOT APP_USER APP_PORT MYSQL_HOST MYSQL_PORT MYSQL_USER
   MYSQL_PASSWORD MYSQL_DATABASE QUICKPAGE_CREDENTIAL_KEY CREATE_DATABASE
   ENABLE_HTTPS LETSENCRYPT_EMAIL OPEN_FIREWALL BUILD_SWAP_SIZE_MB
-  MIN_BUILD_MEMORY_MB SWAP_FILE
+  MIN_BUILD_MEMORY_MB SWAP_FILE FRONTEND_MODE DIST_ARCHIVE
 )
 declare -A CLI_OVERRIDES=()
 for key in "${CONFIG_KEYS[@]}"; do
@@ -69,6 +69,7 @@ for key in "${!CLI_OVERRIDES[@]}"; do
 done
 
 DOMAIN="${DOMAIN:-}"
+DOMAIN_ALIASES="${DOMAIN_ALIASES:-}"
 APP_ROOT="${APP_ROOT:-/opt/${SERVICE_NAME}}"
 APP_USER="${APP_USER:-xiaodou}"
 APP_PORT="${APP_PORT:-4173}"
@@ -81,10 +82,18 @@ CREATE_DATABASE="${CREATE_DATABASE:-1}"
 ENABLE_HTTPS="${ENABLE_HTTPS:-0}"
 LETSENCRYPT_EMAIL="${LETSENCRYPT_EMAIL:-}"
 OPEN_FIREWALL="${OPEN_FIREWALL:-1}"
-BUILD_SWAP_SIZE_MB="${BUILD_SWAP_SIZE_MB:-4096}"
-MIN_BUILD_MEMORY_MB="${MIN_BUILD_MEMORY_MB:-4096}"
+FRONTEND_MODE="${FRONTEND_MODE:-prebuilt}"
+DIST_ARCHIVE="${DIST_ARCHIVE:-dist.zip}"
+if [[ "${FRONTEND_MODE}" == "prebuilt" ]]; then
+  BUILD_SWAP_SIZE_MB="${BUILD_SWAP_SIZE_MB:-2048}"
+  MIN_BUILD_MEMORY_MB="${MIN_BUILD_MEMORY_MB:-2048}"
+else
+  BUILD_SWAP_SIZE_MB="${BUILD_SWAP_SIZE_MB:-4096}"
+  MIN_BUILD_MEMORY_MB="${MIN_BUILD_MEMORY_MB:-4096}"
+fi
 SWAP_FILE="${SWAP_FILE:-/var/lib/${SERVICE_NAME}/build.swap}"
 DOMAIN="${DOMAIN,,}"
+DOMAIN_ALIASES="${DOMAIN_ALIASES,,}"
 
 [[ -n "${DOMAIN}" ]] || fail "请设置 DOMAIN，可填写域名或服务器 IP"
 [[ "${DOMAIN}" =~ ^[A-Za-z0-9._:-]+$ ]] || fail "DOMAIN 仅允许填写域名或服务器 IP（不含 http://、端口路径）"
@@ -96,9 +105,20 @@ DOMAIN="${DOMAIN,,}"
 [[ "${MYSQL_DATABASE}" =~ ^[A-Za-z0-9_]+$ ]] || fail "MYSQL_DATABASE 仅允许字母、数字和下划线"
 [[ "${ENABLE_HTTPS}" =~ ^[01]$ ]] || fail "ENABLE_HTTPS 只能设置为 0 或 1"
 [[ "${OPEN_FIREWALL}" =~ ^[01]$ ]] || fail "OPEN_FIREWALL 只能设置为 0 或 1"
+[[ "${FRONTEND_MODE}" == "prebuilt" || "${FRONTEND_MODE}" == "build" ]] || fail "FRONTEND_MODE 只能设置为 prebuilt 或 build"
+[[ "${DIST_ARCHIVE}" =~ ^[A-Za-z0-9._/-]+$ && "${DIST_ARCHIVE}" != /* && "${DIST_ARCHIVE}" != *..* ]] || fail "DIST_ARCHIVE 必须是项目内的安全相对路径"
 [[ "${BUILD_SWAP_SIZE_MB}" =~ ^[0-9]+$ ]] || fail "BUILD_SWAP_SIZE_MB 必须是非负整数"
 [[ "${MIN_BUILD_MEMORY_MB}" =~ ^[0-9]+$ && "${MIN_BUILD_MEMORY_MB}" -ge 1024 ]] || fail "MIN_BUILD_MEMORY_MB 必须是不小于 1024 的整数"
 [[ "${SWAP_FILE}" =~ ^/[A-Za-z0-9._/-]+$ ]] || fail "SWAP_FILE 必须是安全的绝对路径"
+DOMAIN_ALIAS_LIST=()
+SERVER_NAMES="${DOMAIN}"
+read -r -a RAW_DOMAIN_ALIASES <<< "${DOMAIN_ALIASES//,/ }"
+for alias in "${RAW_DOMAIN_ALIASES[@]}"; do
+  [[ "${alias}" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]] || fail "域名别名格式无效：${alias}"
+  [[ "${alias}" != "${DOMAIN}" ]] || continue
+  DOMAIN_ALIAS_LIST+=("${alias}")
+  SERVER_NAMES+=" ${alias}"
+done
 if [[ "${ENABLE_HTTPS}" == "1" ]]; then
   [[ "${DOMAIN}" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]] || fail "申请 Let's Encrypt 证书必须使用可公网解析的域名，不能使用 IP"
   [[ ! "${DOMAIN}" =~ ^[0-9]+(\.[0-9]+){3}$ ]] || fail "Let's Encrypt 证书申请不支持此 IP 配置，请使用域名或设置 ENABLE_HTTPS=0"
@@ -136,10 +156,10 @@ install_packages() {
   if [[ "${DISTRO}" == "apt" ]]; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y nginx rsync curl ca-certificates openssl default-mysql-client
+    apt-get install -y nginx rsync curl ca-certificates openssl unzip default-mysql-client
     if [[ "${ENABLE_HTTPS}" == "1" ]]; then apt-get install -y certbot; fi
   else
-    dnf install -y nginx rsync curl ca-certificates openssl mariadb policycoreutils
+    dnf install -y nginx rsync curl ca-certificates openssl unzip mariadb policycoreutils
     if [[ "${ENABLE_HTTPS}" == "1" ]] && ! dnf install -y certbot; then
       dnf install -y epel-release
       dnf install -y certbot
@@ -258,7 +278,7 @@ create_database() {
 }
 
 write_systemd_unit() {
-  local npm_bin="$1"
+  local node_bin="$1"
   cat > "${SYSTEMD_UNIT}" <<EOF
 [Unit]
 Description=Xiaodou Prototype application service
@@ -271,7 +291,7 @@ User=${APP_USER}
 Group=${APP_USER}
 WorkingDirectory=${APP_ROOT}/current
 EnvironmentFile=${RUNTIME_ENV_FILE}
-ExecStart=${npm_bin} run preview -- --host 127.0.0.1 --port ${APP_PORT} --strictPort
+ExecStart=${node_bin} ${APP_ROOT}/current/node_modules/vite/bin/vite.js preview --config vite.production.config.ts --host 127.0.0.1 --port ${APP_PORT} --strictPort
 Restart=always
 RestartSec=3
 TimeoutStopSec=20
@@ -353,7 +373,7 @@ write_nginx_config() {
 server {
     listen 80;
     listen [::]:80;
-    server_name ${DOMAIN};
+    server_name ${SERVER_NAMES};
 
     location ^~ /.well-known/acme-challenge/ {
         root ${APP_ROOT}/current/dist;
@@ -369,7 +389,7 @@ server {
 server {
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
-    server_name ${DOMAIN};
+    server_name ${SERVER_NAMES};
 
     ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
@@ -389,7 +409,7 @@ EOF
 server {
     listen 80;
     listen [::]:80;
-    server_name ${DOMAIN};
+    server_name ${SERVER_NAMES};
 
     root ${APP_ROOT}/current/dist;
     index index.html;
@@ -419,7 +439,11 @@ certificate_available() {
 }
 
 enable_https() {
+  local certificate_domains=(--domain "${DOMAIN}") alias
   [[ "${ENABLE_HTTPS}" == "1" ]] || return 0
+  for alias in "${DOMAIN_ALIAS_LIST[@]}"; do
+    certificate_domains+=(--domain "${alias}")
+  done
   log "申请或续期 Let's Encrypt SSL 证书"
   certbot certonly \
     --non-interactive \
@@ -429,7 +453,7 @@ enable_https() {
     --webroot \
     --webroot-path "${APP_ROOT}/current/dist" \
     --cert-name "${DOMAIN}" \
-    --domain "${DOMAIN}" \
+    "${certificate_domains[@]}" \
     --keep-until-expiring
 
   certificate_available || fail "Let's Encrypt 未生成证书，请检查域名 DNS 和服务器 80 端口"
@@ -463,12 +487,42 @@ wait_for_backend() {
   return 1
 }
 
+prepare_frontend_and_runtime() {
+  if [[ "${FRONTEND_MODE}" == "build" ]]; then
+    log "安装完整依赖并构建前端"
+    (
+      cd "${RELEASE_DIR}"
+      npm ci --include=dev --no-audit --no-fund
+      NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=3072}" npm run build
+    )
+    return
+  fi
+
+  local archive="${RELEASE_DIR}/${DIST_ARCHIVE}"
+  [[ -s "${archive}" ]] || fail "未找到预构建前端包：${DIST_ARCHIVE}；请提交该文件或设置 FRONTEND_MODE=build"
+  if unzip -Z1 "${archive}" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+    fail "预构建前端包包含不安全路径：${DIST_ARCHIVE}"
+  fi
+  log "解压预构建前端：${DIST_ARCHIVE}（跳过服务器前端构建）"
+  unzip -q -o "${archive}" -d "${RELEASE_DIR}"
+  [[ -s "${RELEASE_DIR}/dist/index.html" ]] || fail "${DIST_ARCHIVE} 中缺少 dist/index.html"
+  [[ -s "${RELEASE_DIR}/dist/tmagic-editor.html" ]] || fail "${DIST_ARCHIVE} 中缺少 dist/tmagic-editor.html"
+  [[ -d "${RELEASE_DIR}/dist/assets" ]] || fail "${DIST_ARCHIVE} 中缺少 dist/assets"
+
+  log "安装轻量服务端运行依赖"
+  install -d -m 0755 "${RELEASE_DIR}/.runtime"
+  install -m 0644 "${RELEASE_DIR}/deploy/runtime/package.json" "${RELEASE_DIR}/.runtime/package.json"
+  install -m 0644 "${RELEASE_DIR}/deploy/runtime/package-lock.json" "${RELEASE_DIR}/.runtime/package-lock.json"
+  npm ci --prefix "${RELEASE_DIR}/.runtime" --omit=dev --no-audit --no-fund
+  ln -s .runtime/node_modules "${RELEASE_DIR}/node_modules"
+}
+
 install_packages
 install_node
 configure_firewall
 
 command -v npm >/dev/null 2>&1 || fail "npm 不可用"
-NPM_BIN="$(command -v npm)"
+NODE_BIN="$(command -v node)"
 
 if ! getent group "${APP_USER}" >/dev/null 2>&1; then
   log "创建运行用户组 ${APP_USER}"
@@ -514,12 +568,7 @@ rsync -a \
   --exclude='deploy/deploy.env' \
   "${SOURCE_DIR}/" "${RELEASE_DIR}/"
 
-log "安装依赖并构建前端"
-(
-  cd "${RELEASE_DIR}"
-  npm ci --include=dev --no-audit --no-fund
-  NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=3072}" npm run build
-)
+prepare_frontend_and_runtime
 
 chown -R root:"${APP_USER}" "${RELEASE_DIR}"
 chmod -R u=rwX,g=rX,o= "${RELEASE_DIR}"
@@ -527,7 +576,7 @@ install -d -o "${APP_USER}" -g "${APP_USER}" -m 0750 "${RELEASE_DIR}/.quickpage-
 configure_selinux
 
 ln -sfn "${RELEASE_DIR}" "${APP_ROOT}/current"
-write_systemd_unit "${NPM_BIN}"
+write_systemd_unit "${NODE_BIN}"
 INITIAL_TLS=0
 if [[ "${ENABLE_HTTPS}" == "1" ]] && certificate_available; then INITIAL_TLS=1; fi
 write_nginx_config "${INITIAL_TLS}"
