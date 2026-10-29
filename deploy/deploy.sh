@@ -439,25 +439,53 @@ certificate_available() {
   [[ -s "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" && -s "/etc/letsencrypt/live/${DOMAIN}/privkey.pem" ]]
 }
 
+wait_for_certbot_slot() {
+  local attempt
+  for attempt in $(seq 1 60); do
+    if ! pgrep -f '[c]ertbot' >/dev/null 2>&1; then
+      return 0
+    fi
+    if [[ "${attempt}" == "1" || $((attempt % 10)) == "0" ]]; then
+      log "检测到其他 Certbot 任务，等待其结束（${attempt}/60）"
+    fi
+    sleep 2
+  done
+  return 1
+}
+
 enable_https() {
-  local certificate_domains=(--domain "${DOMAIN}") alias
+  local certificate_domains=(--domain "${DOMAIN}") alias certbot_attempt certbot_succeeded=0
   [[ "${ENABLE_HTTPS}" == "1" ]] || return 0
   for alias in "${DOMAIN_ALIAS_LIST[@]}"; do
     certificate_domains+=(--domain "${alias}")
   done
-  log "申请或续期 Let's Encrypt SSL 证书"
-  certbot certonly \
-    --non-interactive \
-    --agree-tos \
-    --email "${LETSENCRYPT_EMAIL}" \
-    --preferred-challenges http \
-    --webroot \
-    --webroot-path "${APP_ROOT}/current/dist" \
-    --cert-name "${DOMAIN}" \
-    "${certificate_domains[@]}" \
-    --keep-until-expiring
-
-  certificate_available || fail "Let's Encrypt 未生成证书，请检查域名 DNS 和服务器 80 端口"
+  if certificate_available; then
+    log "检测到现有 Let's Encrypt 证书，直接启用 HTTPS"
+  else
+    log "申请 Let's Encrypt SSL 证书"
+    for certbot_attempt in 1 2 3; do
+      wait_for_certbot_slot || fail "等待其他 Certbot 任务结束超时，请检查 systemctl status certbot-renew.service"
+      if certbot certonly \
+        --non-interactive \
+        --agree-tos \
+        --email "${LETSENCRYPT_EMAIL}" \
+        --preferred-challenges http \
+        --webroot \
+        --webroot-path "${APP_ROOT}/current/dist" \
+        --cert-name "${DOMAIN}" \
+        "${certificate_domains[@]}" \
+        --keep-until-expiring; then
+        certbot_succeeded=1
+        break
+      fi
+      if [[ "${certbot_attempt}" != "3" ]]; then
+        log "Certbot 第 ${certbot_attempt} 次执行失败，等待 5 秒后重试"
+        sleep 5
+      fi
+    done
+    [[ "${certbot_succeeded}" == "1" ]] || fail "Let's Encrypt 证书申请失败，请检查上方 Certbot 错误、域名 DNS 和服务器 80 端口"
+    certificate_available || fail "Let's Encrypt 未生成证书，请检查域名 DNS 和服务器 80 端口"
+  fi
   write_nginx_config 1
   nginx -t || fail "HTTPS Nginx 配置检查失败"
   systemctl reload nginx
