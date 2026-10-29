@@ -22,6 +22,7 @@ const submissionResults = new Map<string, SubmissionResult>()
 const workspace = ref<{
   id: string
   url: string
+  editorUrl: string
   file: string
   projectId: string
   pageId: string
@@ -128,7 +129,7 @@ async function open() {
     return
   }
   show.value = true
-  if (popup) popup.location.href = workspace.value.url + 'manual'
+  if (popup) popup.location.href = workspace.value.editorUrl
   else message.warning('请允许本站弹出窗口，然后重新打开手动局部编辑')
 }
 async function poll() {

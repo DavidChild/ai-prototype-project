@@ -20,14 +20,28 @@ test('manual editing and undo/redo preserve the iframe document and source chang
 }, async (t) => {
   const { layrrBridgePlugin } = await createJiti(import.meta.url).import('../server/layrrBridge.ts')
   const root = await mkdtemp(join(tmpdir(), 'quickpage-manual-browser-'))
-  let handle
+  let apiHandle
+  let previewHandle
   const server = createServer((req, res) => {
-    req.url = req.url.slice('/api/layrr'.length)
-    void handle(req, res)
+    if (req.url.startsWith('/api/layrr')) {
+      req.url = req.url.slice('/api/layrr'.length)
+      void apiHandle(req, res)
+      return
+    }
+    void previewHandle(req, res, () => res.writeHead(404).end())
   })
-  layrrBridgePlugin().configureServer({
+  layrrBridgePlugin(undefined, {
+    actorFromRequest: async () => ({ userId: 'test', tenantId: 'test', tenantRole: 'tenant_admin' }),
+    requireActor: (actor) => actor,
+    resolveProjectAccess: async () => ({ tenantId: 'test', data: {} }),
+  }).configureServer({
     config: { root }, httpServer: server,
-    middlewares: { use(_path, callback) { handle = callback } },
+    middlewares: {
+      use(path, callback) {
+        if (typeof path === 'function') previewHandle = path
+        else apiHandle = callback
+      },
+    },
   })
   server.listen(0, '127.0.0.1')
   await once(server, 'listening')
@@ -94,7 +108,7 @@ test('manual editing and undo/redo preserve the iframe document and source chang
   const page = await browser.newPage({ viewport: { width: 1200, height: 900 } })
   const errors = []
   page.on('pageerror', (error) => errors.push(error.message))
-  await page.goto(session.url + 'manual')
+  await page.goto(origin + session.editorUrl)
   await page.waitForFunction(() => document.querySelector('#dirty').textContent === '工作区已同步')
   await page.evaluate(() => {
     window.originalCanvasDocument = document.querySelector('#canvas').contentDocument
@@ -492,7 +506,7 @@ test('manual editing and undo/redo preserve the iframe document and source chang
   await page.waitForFunction(() => document.querySelector('#dirty').textContent === '工作区已同步')
   assert.equal(await page.locator('#versionFeedback').inputValue(), '')
   assert.equal(await page.locator('#save').count(), 1)
-  const saved = await fetch(session.url + '__layrr__/manual-data', {
+  const saved = await fetch(origin + session.url + '__layrr__/manual-data', {
     headers: { 'x-quickpage-manual': '1' },
   }).then((res) => res.json())
   assert.match(saved.html, /Edited text/)

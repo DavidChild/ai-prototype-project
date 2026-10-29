@@ -12,18 +12,30 @@ const { layrrBridgePlugin } = await jiti.import('../server/layrrBridge.ts')
 
 test('Layrr workspaces serve official overlay, accept local jobs and isolate files', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'quickpage-layrr-test-'))
-  let handle
+  let apiHandle
+  let previewHandle
   const server = createServer((req, res) => {
-    req.url = req.url.slice('/api/layrr'.length)
-    void handle(req, res)
+    if (req.url.startsWith('/api/layrr')) {
+      req.url = req.url.slice('/api/layrr'.length)
+      void apiHandle(req, res)
+      return
+    }
+    void previewHandle(req, res, () => res.writeHead(404).end())
   })
-  layrrBridgePlugin().configureServer({
+  layrrBridgePlugin(undefined, {
+    actorFromRequest: async () => ({ userId: 'test', tenantId: 'test', tenantRole: 'tenant_admin' }),
+    requireActor: (actor) => actor,
+    resolveProjectAccess: async () => ({ tenantId: 'test', data: {} }),
+  }).configureServer({
     config: { root },
     httpServer: server,
     middlewares: {
       use(path, callback) {
-        assert.equal(path, '/api/layrr')
-        handle = callback
+        if (typeof path === 'function') previewHandle = path
+        else {
+          assert.equal(path, '/api/layrr')
+          apiHandle = callback
+        }
       },
     },
   })
@@ -58,8 +70,11 @@ test('Layrr workspaces serve official overlay, accept local jobs and isolate fil
       baseline: 'baseline',
     })
   ).data
-  assert.ok(session.id)
+  assert.ok(session.id, JSON.stringify(session))
   assert.equal(session.editorUrl, session.url + 'manual')
+  assert.equal(session.url, `/preview/${session.id}/`)
+  assert.doesNotMatch(session.url, /127\.0\.0\.1|localhost/)
+  const publicUrl = origin + session.url
   const documentUrl = origin + '/api/layrr/' + session.id + '/document'
   const documentState = await fetch(documentUrl, { headers }).then((response) => response.json())
   assert.equal(documentState.html, '<html><body><h1>old</h1></body></html>')
@@ -70,27 +85,27 @@ test('Layrr workspaces serve official overlay, accept local jobs and isolate fil
   })
   assert.equal(savedDocument.status, 200)
   assert.equal((await request('/' + session.id)).data.html, '<html><body><h1>edited</h1></body></html>')
-  const preview = await (await fetch(session.url)).text()
+  const preview = await (await fetch(publicUrl)).text()
   assert.ok(preview.includes('__layrr__/overlay.js'))
   assert.doesNotMatch(await readFile(session.file, 'utf8'), /__layrr__/)
-  const previewOrigin = new URL(session.url).origin
-  const prefix = new URL(session.url).pathname.slice(0, -1)
+  const previewOrigin = origin
+  const prefix = session.url.slice(0, -1)
   const overlayResponse = await fetch(previewOrigin + prefix + '/__layrr__/overlay.js')
   assert.equal(overlayResponse.status, 200)
   const servedOverlay = await overlayResponse.text()
   assert.match(servedOverlay, /__LAYRR_LOADED__/)
   assert.match(servedOverlay, /CSS\.escape\(className\)/)
   assert.equal((await fetch(previewOrigin + '/package.json')).status, 404)
-  const manualUrl = session.url + '__layrr__/manual-data'
+  const manualUrl = publicUrl + '__layrr__/manual-data'
   const manualHeaders = {
     'x-quickpage-manual': '1',
     Origin: previewOrigin,
     'Content-Type': 'application/json',
   }
-  assert.match(await (await fetch(session.url + 'manual')).text(), /<strong>手动编辑<\/strong>/)
-  const manualScript = await (await fetch(session.url + '__layrr__/manual.js')).text()
+  assert.match(await (await fetch(origin + session.editorUrl)).text(), /<strong>手动编辑<\/strong>/)
+  const manualScript = await (await fetch(publicUrl + '__layrr__/manual.js')).text()
   new Function(manualScript.replace(/^import .*$/gm, ''))
-  assert.match(await (await fetch(session.url + 'grid')).text(), /GridStack/)
+  assert.match(await (await fetch(publicUrl + 'grid')).text(), /GridStack/)
   for (const asset of [
     'gridstack.js',
     'gridstack.css',
@@ -100,7 +115,7 @@ test('Layrr workspaces serve official overlay, accept local jobs and isolate fil
     'manual-history.js',
     'interact.js',
   ]) {
-    const response = await fetch(session.url + '__layrr__/' + asset)
+    const response = await fetch(publicUrl + '__layrr__/' + asset)
     assert.equal(response.status, 200, asset)
     assert.ok((await response.text()).length > 10, asset)
   }
@@ -192,7 +207,7 @@ test('Layrr workspaces serve official overlay, accept local jobs and isolate fil
   assert.equal(aiSubmission.id, job.id)
   assert.equal(aiSubmission.feedbackText, 'change text')
   assert.equal(aiSubmission.source, 'ai-local')
-  assert.equal((await fetch(session.url + '__layrr__/edit-status').then((response) => response.json())).success, null)
+  assert.equal((await fetch(publicUrl + '__layrr__/edit-status').then((response) => response.json())).success, null)
   await request('/' + session.id, 'POST', { submissionId: aiSubmission.id, success: true, message: '已保存为 v3' })
   assert.equal(JSON.parse((await resultPromise)[0]).success, true)
   assert.equal(

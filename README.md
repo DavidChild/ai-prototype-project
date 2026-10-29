@@ -13,6 +13,8 @@ npm install
 npm run dev
 ```
 
+生产服务器可使用 [Nginx + systemd 一键部署脚本](./deploy/README.md)。
+
 启动前请创建空数据库并配置连接（默认数据库名 `db_proto`）：
 
 ```sql

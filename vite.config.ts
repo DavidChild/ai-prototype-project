@@ -152,5 +152,9 @@ export default defineConfig(({ mode }) => {
     host: '0.0.0.0',
     port: 5173,
   },
+  preview: {
+    // Production binds to loopback and is reached through the configured Nginx host.
+    allowedHosts: true,
+  },
   }
 })

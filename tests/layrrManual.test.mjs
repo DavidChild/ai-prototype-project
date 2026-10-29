@@ -198,11 +198,11 @@ test('grid drag combines live-configurable snapping with parent restriction for 
 
 test('local editing opens and reopens the original manual workspace', async () => {
   const source = await readFile(new URL('../src/components/workbench/LayrrEditor.vue', import.meta.url), 'utf8')
-  assert.ok(source.includes("popup.location.href = result.url + 'manual'"))
-  assert.ok(source.includes("window.open(workspace.value.url + 'manual'"))
-  assert.ok(source.includes("workspace.url + 'manual'"))
+  assert.ok(source.includes("window.open('about:blank', '_blank')"))
+  assert.ok(source.includes('popup.location.href = workspace.value.editorUrl'))
+  assert.ok(source.includes('editorUrl: string'))
   assert.match(source, /html: original/)
-  assert.doesNotMatch(source, /result.editorUrl|workspace.editorUrl|tmagic-editor/)
+  assert.doesNotMatch(source, /tmagic-editor/)
 })
 
 test('undo/redo and ordinary commits never reload the preview document', async () => {

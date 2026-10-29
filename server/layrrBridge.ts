@@ -1,11 +1,11 @@
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomBytes } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer, WebSocket } from 'ws'
-import type { Plugin } from 'vite'
+import type { Plugin, PreviewServer, ViteDevServer } from 'vite'
 import mysql from 'mysql2/promise'
 import type { MysqlStorageConfig } from './mysqlStorage'
 import { actorFromRequest, requireActor, resolveProjectAccess } from './saasAuth'
@@ -85,6 +85,16 @@ function json(res: ServerResponse, value: unknown, status = 200) {
   res.end(JSON.stringify(value))
 }
 
+function isSameOrigin(req: IncomingMessage): boolean {
+  const origin = req.headers.origin
+  if (!origin) return true
+  try {
+    return new URL(origin).host === req.headers.host
+  } catch {
+    return false
+  }
+}
+
 function validateEditAttachments(value: unknown): EditAttachment[] {
   if (value === undefined) return []
   if (!Array.isArray(value) || value.length > 1) throw new Error('一次只能携带一张参考图')
@@ -103,11 +113,12 @@ function validateEditAttachments(value: unknown): EditAttachment[] {
 }
 
 /** Uses the official Layrr overlay, with a 小豆原型 provider/patch adapter instead of a CLI agent. */
-export function layrrBridgePlugin(config: MysqlStorageConfig): Plugin {
+export function layrrBridgePlugin(
+  config: MysqlStorageConfig,
+  authorization = { actorFromRequest, requireActor, resolveProjectAccess },
+): Plugin {
   const authPool = mysql.createPool({ ...config, connectionLimit: 4, supportBigNumbers: true, charset: 'utf8mb4' })
-  return {
-    name: 'quickpage-layrr-bridge',
-    configureServer(vite) {
+  const configure = (vite: ViteDevServer | PreviewServer) => {
       const sessions = new Map<
         string,
         {
@@ -126,7 +137,89 @@ export function layrrBridgePlugin(config: MysqlStorageConfig): Plugin {
           close: () => void
         }
       >()
+      vite.middlewares.use((req, res, next) => {
+        const match = (req.url ?? '').match(/^\/preview\/([a-f0-9]{48})(?:\/|$)/)
+        if (!match) {
+          next()
+          return
+        }
+        const session = sessions.get(match[1]!)
+        if (!session) {
+          res.statusCode = 404
+          res.end('工作区已关闭')
+          return
+        }
+        if (!isSameOrigin(req)) {
+          res.statusCode = 403
+          res.end('不允许跨站访问工作区')
+          return
+        }
+        session.lastAccessAt = Date.now()
+        const target = new URL(req.url ?? '/', session.url)
+        const headers = { ...req.headers, host: target.host }
+        if (headers.origin) headers.origin = `${target.protocol}//${target.host}`
+        const upstream = httpRequest(target, { method: req.method, headers }, (upstreamRes) => {
+          res.statusCode = upstreamRes.statusCode ?? 502
+          for (const [name, value] of Object.entries(upstreamRes.headers)) {
+            if (value !== undefined) res.setHeader(name, value)
+          }
+          upstreamRes.pipe(res)
+        })
+        upstream.on('error', (error) => {
+          if (res.headersSent) {
+            res.destroy(error)
+            return
+          }
+          res.statusCode = 502
+          res.end('工作区代理失败')
+        })
+        req.pipe(upstream)
+      })
+
+      const previewProxyWss = new WebSocketServer({ noServer: true })
+      const handlePreviewUpgrade = (
+        request: IncomingMessage,
+        socket: Parameters<WebSocketServer['handleUpgrade']>[1],
+        head: Buffer,
+      ) => {
+        const match = (request.url ?? '').match(
+          /^\/preview\/([a-f0-9]{48})\/__layrr__\/ws$/,
+        )
+        if (!match) return
+        const session = sessions.get(match[1]!)
+        if (!session || !isSameOrigin(request)) {
+          socket.destroy()
+          return
+        }
+        session.lastAccessAt = Date.now()
+        previewProxyWss.handleUpgrade(request, socket, head, (client) => {
+          const target = new URL(request.url!, session.url)
+          target.protocol = target.protocol === 'https:' ? 'wss:' : 'ws:'
+          const upstream = new WebSocket(target, {
+            headers: { origin: `${session.url.split('/preview/')[0]}` },
+          })
+          const queued: Array<{ data: Parameters<WebSocket['send']>[0]; binary: boolean }> = []
+          client.on('message', (data, binary) => {
+            if (upstream.readyState === WebSocket.OPEN) upstream.send(data, { binary })
+            else if (upstream.readyState === WebSocket.CONNECTING) queued.push({ data, binary })
+          })
+          upstream.on('open', () => {
+            for (const item of queued) upstream.send(item.data, { binary: item.binary })
+            queued.length = 0
+          })
+          upstream.on('message', (data, binary) => {
+            if (client.readyState === WebSocket.OPEN) client.send(data, { binary })
+          })
+          client.on('close', () => upstream.close())
+          upstream.on('close', () => client.close())
+          client.on('error', () => upstream.close())
+          upstream.on('error', () => client.close(1011, '工作区连接失败'))
+        })
+      }
+      vite.httpServer?.on('upgrade', handlePreviewUpgrade)
       vite.httpServer?.once('close', () => {
+        vite.httpServer?.off('upgrade', handlePreviewUpgrade)
+        previewProxyWss.close()
         for (const session of sessions.values()) session.close()
         void authPool.end()
       })
@@ -165,8 +258,8 @@ export function layrrBridgePlugin(config: MysqlStorageConfig): Plugin {
               typeof input.baseline !== 'string'
             )
               throw new Error('缺少页面或版本信息')
-            const actor = requireActor(await actorFromRequest(authPool, req))
-            await resolveProjectAccess(authPool, actor, input.projectId, 'write')
+            const actor = authorization.requireActor(await authorization.actorFromRequest(authPool, req))
+            await authorization.resolveProjectAccess(authPool, actor, input.projectId, 'write')
             if (sessions.size >= 8) throw new Error('最多打开 8 个工作区，请先关闭其他工作区')
             const id = randomBytes(24).toString('hex')
             const folder = join(vite.config.root, '.quickpage-layrr', id)
@@ -399,7 +492,8 @@ export function layrrBridgePlugin(config: MysqlStorageConfig): Plugin {
                 server.closeAllConnections()
               },
             })
-            json(res, { id, url, file, editorUrl: url + 'manual' })
+            const publicUrl = `${prefix}/`
+            json(res, { id, url: publicUrl, file, editorUrl: publicUrl + 'manual' })
             return
           }
           const session = sessions.get(parts[0] ?? '')
@@ -509,6 +603,10 @@ export function layrrBridgePlugin(config: MysqlStorageConfig): Plugin {
           json(res, { error: error instanceof Error ? error.message : 'Layrr 工作区错误' }, 400)
         }
       })
-    },
+  }
+  return {
+    name: 'quickpage-layrr-bridge',
+    configureServer: configure,
+    configurePreviewServer: configure,
   }
 }

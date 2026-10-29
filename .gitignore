@@ -17,6 +17,7 @@ coverage
 .env
 .env.*
 !.env.example
+deploy/deploy.env
 
 # Editor directories and files
 .vscode/*
