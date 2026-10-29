@@ -39,6 +39,8 @@ sudo DOMAIN=prototype.example.com \
 
 在 CentOS/Rocky/Alma 上，如果 firewalld 正在运行，脚本默认通过 `OPEN_FIREWALL=1` 自动开放 `http` 和 `https` 服务。云服务器安全组仍需在云平台控制台单独开放 80/443，脚本无法代替云安全组配置。
 
+前端依赖安装和构建需要较多内存。默认当“物理内存 + Swap”少于 4GB 时，脚本会创建并持久启用 `/var/lib/xiaodou-prototype/build.swap`（默认 4GB），避免 `npm ci` 或构建被系统以退出码 137 杀死。可以通过 `MIN_BUILD_MEMORY_MB`、`BUILD_SWAP_SIZE_MB` 和 `SWAP_FILE` 调整；设置 `BUILD_SWAP_SIZE_MB=0` 会禁止自动创建 Swap，并在内存不足时直接给出错误。
+
 脚本会自动安装 Nginx、Node.js 22、MySQL 客户端、`rsync` 和 Certbot，创建数据库（数据库表由应用启动时自动建立）、构建前端、安装 systemd 服务并执行前后端健康检查。启用 HTTPS 时，脚本使用 HTTP Webroot 校验申请证书，签发后自动启用 HTTPS、HTTP 301 跳转和证书续期 reload hook。在启用 SELinux 的发行版上，脚本也会开放 Nginx 访问本机 Node 服务和前端构建目录所需的权限。
 
 MySQL 服务本身需已安装并可连接；数据库不在本机时，将 `MYSQL_HOST` 改为实际地址。如果数据库账号没有建库权限，请预先创建 `db_proto` 并设置 `CREATE_DATABASE=0`。

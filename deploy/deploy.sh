@@ -39,7 +39,8 @@ fi
 CONFIG_KEYS=(
   DOMAIN APP_ROOT APP_USER APP_PORT MYSQL_HOST MYSQL_PORT MYSQL_USER
   MYSQL_PASSWORD MYSQL_DATABASE QUICKPAGE_CREDENTIAL_KEY CREATE_DATABASE
-  ENABLE_HTTPS LETSENCRYPT_EMAIL OPEN_FIREWALL
+  ENABLE_HTTPS LETSENCRYPT_EMAIL OPEN_FIREWALL BUILD_SWAP_SIZE_MB
+  MIN_BUILD_MEMORY_MB SWAP_FILE
 )
 declare -A CLI_OVERRIDES=()
 for key in "${CONFIG_KEYS[@]}"; do
@@ -80,6 +81,9 @@ CREATE_DATABASE="${CREATE_DATABASE:-1}"
 ENABLE_HTTPS="${ENABLE_HTTPS:-0}"
 LETSENCRYPT_EMAIL="${LETSENCRYPT_EMAIL:-}"
 OPEN_FIREWALL="${OPEN_FIREWALL:-1}"
+BUILD_SWAP_SIZE_MB="${BUILD_SWAP_SIZE_MB:-4096}"
+MIN_BUILD_MEMORY_MB="${MIN_BUILD_MEMORY_MB:-4096}"
+SWAP_FILE="${SWAP_FILE:-/var/lib/${SERVICE_NAME}/build.swap}"
 DOMAIN="${DOMAIN,,}"
 
 [[ -n "${DOMAIN}" ]] || fail "请设置 DOMAIN，可填写域名或服务器 IP"
@@ -92,6 +96,9 @@ DOMAIN="${DOMAIN,,}"
 [[ "${MYSQL_DATABASE}" =~ ^[A-Za-z0-9_]+$ ]] || fail "MYSQL_DATABASE 仅允许字母、数字和下划线"
 [[ "${ENABLE_HTTPS}" =~ ^[01]$ ]] || fail "ENABLE_HTTPS 只能设置为 0 或 1"
 [[ "${OPEN_FIREWALL}" =~ ^[01]$ ]] || fail "OPEN_FIREWALL 只能设置为 0 或 1"
+[[ "${BUILD_SWAP_SIZE_MB}" =~ ^[0-9]+$ ]] || fail "BUILD_SWAP_SIZE_MB 必须是非负整数"
+[[ "${MIN_BUILD_MEMORY_MB}" =~ ^[0-9]+$ && "${MIN_BUILD_MEMORY_MB}" -ge 1024 ]] || fail "MIN_BUILD_MEMORY_MB 必须是不小于 1024 的整数"
+[[ "${SWAP_FILE}" =~ ^/[A-Za-z0-9._/-]+$ ]] || fail "SWAP_FILE 必须是安全的绝对路径"
 if [[ "${ENABLE_HTTPS}" == "1" ]]; then
   [[ "${DOMAIN}" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]] || fail "申请 Let's Encrypt 证书必须使用可公网解析的域名，不能使用 IP"
   [[ ! "${DOMAIN}" =~ ^[0-9]+(\.[0-9]+){3}$ ]] || fail "Let's Encrypt 证书申请不支持此 IP 配置，请使用域名或设置 ENABLE_HTTPS=0"
@@ -169,6 +176,47 @@ configure_firewall() {
     firewall-cmd --permanent --add-service=https >/dev/null
   fi
   firewall-cmd --reload >/dev/null
+}
+
+ensure_build_memory() {
+  local total_kb target_kb swap_dir available_mb required_mb
+  total_kb="$(awk '/^(MemTotal|SwapTotal):/ { total += $2 } END { print total + 0 }' /proc/meminfo)"
+  target_kb="$((MIN_BUILD_MEMORY_MB * 1024))"
+  if (( total_kb >= target_kb )); then
+    log "构建内存检查通过：内存 + Swap 共 $((total_kb / 1024)) MB"
+    return 0
+  fi
+  if (( BUILD_SWAP_SIZE_MB == 0 )); then
+    fail "内存 + Swap 仅 $((total_kb / 1024)) MB；请增加内存/Swap，或设置 BUILD_SWAP_SIZE_MB 后重试"
+  fi
+
+  swap_dir="$(dirname "${SWAP_FILE}")"
+  install -d -o root -g root -m 0700 "${swap_dir}"
+  if [[ ! -e "${SWAP_FILE}" ]]; then
+    available_mb="$(df -Pm "${swap_dir}" | awk 'NR == 2 { print $4 }')"
+    required_mb="$((BUILD_SWAP_SIZE_MB + 512))"
+    (( available_mb >= required_mb )) \
+      || fail "创建 ${BUILD_SWAP_SIZE_MB} MB Swap 需要至少 ${required_mb} MB 可用磁盘，当前仅 ${available_mb} MB"
+    log "构建内存不足，创建 ${BUILD_SWAP_SIZE_MB} MB Swap：${SWAP_FILE}"
+    if ! fallocate -l "${BUILD_SWAP_SIZE_MB}M" "${SWAP_FILE}" 2>/dev/null; then
+      dd if=/dev/zero of="${SWAP_FILE}" bs=1M count="${BUILD_SWAP_SIZE_MB}" status=progress
+    fi
+    chmod 0600 "${SWAP_FILE}"
+    mkswap "${SWAP_FILE}" >/dev/null
+  elif [[ ! -f "${SWAP_FILE}" ]]; then
+    fail "Swap 路径已存在且不是普通文件：${SWAP_FILE}"
+  else
+    chmod 0600 "${SWAP_FILE}"
+  fi
+
+  if ! awk 'NR > 1 { print $1 }' /proc/swaps | grep -Fxq "${SWAP_FILE}"; then
+    swapon "${SWAP_FILE}"
+  fi
+  if ! grep -Fq "${SWAP_FILE} none swap defaults 0 0" /etc/fstab; then
+    printf '%s none swap defaults 0 0\n' "${SWAP_FILE}" >> /etc/fstab
+  fi
+  total_kb="$(awk '/^(MemTotal|SwapTotal):/ { total += $2 } END { print total + 0 }' /proc/meminfo)"
+  log "Swap 已启用：内存 + Swap 共 $((total_kb / 1024)) MB"
 }
 
 quote_env() {
@@ -435,6 +483,7 @@ else
 fi
 
 install -d -m 0755 "${APP_ROOT}" "${APP_ROOT}/releases"
+ensure_build_memory
 NGINX_USER="$(awk '$1 == "user" { gsub(";", "", $2); print $2; exit }' /etc/nginx/nginx.conf)"
 NGINX_USER="${NGINX_USER:-www-data}"
 if id -u "${NGINX_USER}" >/dev/null 2>&1; then
@@ -468,8 +517,8 @@ rsync -a \
 log "安装依赖并构建前端"
 (
   cd "${RELEASE_DIR}"
-  npm ci --include=dev
-  npm run build
+  npm ci --include=dev --no-audit --no-fund
+  NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=3072}" npm run build
 )
 
 chown -R root:"${APP_USER}" "${RELEASE_DIR}"
