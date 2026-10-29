@@ -286,7 +286,11 @@ export async function resolveManagedAiProvider(pool: Pool, actor: Actor | null, 
   const result = await rows<RowDataPacket[]>(pool, `SELECT * FROM ai_providers WHERE id=? AND enabled=1 AND (owner_type='platform' OR (owner_type='tenant' AND owner_id=?)) LIMIT 1`, [providerId, user.tenantId ?? ''])
   const row = result[0]
   if (!row) throw Object.assign(new Error('AI 服务通道不存在或未开放'), { statusCode: 404 })
-  return { ...providerDto(row), apiKey: decryptCredential(String(row.credential_cipher)) }
+  try {
+    return { ...providerDto(row), apiKey: decryptCredential(String(row.credential_cipher)) }
+  } catch {
+    throw Object.assign(new Error('AI 服务商密钥无法解密，请在模型设置中重新填写 API Key'), { statusCode: 422 })
+  }
 }
 
 export async function actorFromRequest(pool: Pool, req: IncomingMessage): Promise<Actor | null> {
