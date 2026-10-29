@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
+
+# `sh deploy/deploy.sh` ignores the shebang. Re-enter Bash because this script
+# intentionally uses Bash arrays, regexes and associative maps.
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec bash "$0" "$@"
+fi
+if shopt -oq posix 2>/dev/null; then
+  exec bash "$0" "$@"
+fi
+
 set -Eeuo pipefail
 
 umask 027
@@ -14,6 +24,12 @@ CERTBOT_RELOAD_HOOK="/etc/letsencrypt/renewal-hooks/deploy/${SERVICE_NAME}-nginx
 
 log() { printf '\n[%s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 fail() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
+on_error() {
+  local status=$? line="${BASH_LINENO[0]:-unknown}" command="${BASH_COMMAND:-unknown}"
+  printf '\nERROR: 部署在第 %s 行失败（退出码 %s）：%s\n' "${line}" "${status}" "${command}" >&2
+  exit "${status}"
+}
+trap on_error ERR
 
 if [[ ${EUID} -ne 0 ]]; then
   fail "请使用 root 执行：sudo bash deploy/deploy.sh"
@@ -144,9 +160,9 @@ install_node() {
 }
 
 configure_firewall() {
-  [[ "${OPEN_FIREWALL}" == "1" ]] || return
-  command -v firewall-cmd >/dev/null 2>&1 || return
-  systemctl is-active --quiet firewalld || return
+  [[ "${OPEN_FIREWALL}" == "1" ]] || return 0
+  command -v firewall-cmd >/dev/null 2>&1 || return 0
+  systemctl is-active --quiet firewalld || return 0
   log "开放 firewalld 的 HTTP/HTTPS 服务"
   firewall-cmd --permanent --add-service=http >/dev/null
   if [[ "${ENABLE_HTTPS}" == "1" ]]; then
@@ -343,8 +359,8 @@ EOF
 }
 
 configure_selinux() {
-  command -v getenforce >/dev/null 2>&1 || return
-  [[ "$(getenforce)" != "Disabled" ]] || return
+  command -v getenforce >/dev/null 2>&1 || return 0
+  [[ "$(getenforce)" != "Disabled" ]] || return 0
   log "配置 SELinux 的 Nginx 访问权限"
   setsebool -P httpd_can_network_connect 1
   chcon -R -t httpd_sys_content_t "${RELEASE_DIR}/dist"
@@ -355,7 +371,7 @@ certificate_available() {
 }
 
 enable_https() {
-  [[ "${ENABLE_HTTPS}" == "1" ]] || return
+  [[ "${ENABLE_HTTPS}" == "1" ]] || return 0
   log "申请或续期 Let's Encrypt SSL 证书"
   certbot certonly \
     --non-interactive \

@@ -20,6 +20,8 @@ chmod 600 deploy/deploy.env
 sudo DEPLOY_ENV_FILE="$PWD/deploy/deploy.env" bash deploy/deploy.sh
 ```
 
+推荐使用上面的 `bash deploy/deploy.sh`。即使误用 `sh deploy/deploy.sh`，脚本也会自动重新进入 Bash 执行。
+
 也可以直接通过环境变量执行：
 
 ```bash
