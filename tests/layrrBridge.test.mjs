@@ -69,6 +69,11 @@ test('Layrr workspaces serve official overlay, accept local jobs and isolate fil
       projectId: 'iteration',
       pageId: 'page',
       baseline: 'baseline',
+      constraints: [{
+        name: '标准按钮',
+        description: '使用统一的主按钮结构',
+        html: '<button class="primary">提交</button>',
+      }],
     })
   ).data
   assert.ok(session.id, JSON.stringify(session))
@@ -80,6 +85,8 @@ test('Layrr workspaces serve official overlay, accept local jobs and isolate fil
   const initialPreview = await initialPreviewResponse.text()
   assert.doesNotMatch(initialPreview, /Content-Security-Policy/i)
   assert.match(initialPreview, /__layrr__\/overlay\.js/)
+  assert.match(initialPreview, /__QP_LAYRR_CONSTRAINTS__/)
+  assert.match(initialPreview, /标准按钮/)
   assert.match(initialPreviewResponse.headers.get('content-security-policy'), /'unsafe-eval'/)
   assert.equal(await readFile(session.file, 'utf8'), initialHtml)
   const documentUrl = origin + '/api/layrr/' + session.id + '/document'
@@ -199,10 +206,18 @@ test('Layrr workspaces serve official overlay, accept local jobs and isolate fil
   })
   await once(ws, 'open')
   t.after(() => ws.terminate())
-  ws.send(JSON.stringify({ type: 'edit-request', selector: 'h1', instruction: 'change text' }))
+  const selectedConstraint = {
+    name: '标准按钮',
+    description: '使用统一的主按钮结构',
+    html: '<button class="primary">提交</button>',
+  }
+  ws.send(JSON.stringify({
+    type: 'edit-request', selector: 'h1', instruction: 'change text', constraint: selectedConstraint,
+  }))
   await new Promise((resolve) => setTimeout(resolve, 30))
   const job = (await request('/' + session.id)).data.job
   assert.equal(job.edit.selector, 'h1')
+  assert.deepEqual(job.edit.constraint, selectedConstraint)
   const busyState = await (await fetch(manualUrl, { headers: manualHeaders })).json()
   assert.equal((await manualSave({ revision: busyState.revision, html: 'during AI' })).status, 409)
   assert.equal((await request('/' + session.id)).data.job, null)

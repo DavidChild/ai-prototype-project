@@ -5,6 +5,7 @@ import { useWorkbenchStore } from '@/stores/workbench'
 import { useSettingsStore } from '@/stores/settings'
 import { versionRepo } from '@/services/storage/repositories'
 import { editWithLayrr, type LayrrEdit } from '@/services/generation/layrrEdit'
+import type { GenerationConstraint } from '@/types/generationConstraint'
 const wb = useWorkbenchStore()
 const settings = useSettingsStore()
 const message = useMessage()
@@ -85,12 +86,22 @@ async function start() {
   busy.value = true
   const baseline = page.currentVersionId
   const original = wb.selectedHtml
+  const constraintMap = new Map<string, GenerationConstraint>()
+  for (const item of project.generationConstraints ?? []) constraintMap.set(item.id, item)
+  if (page.spec.constraints?.mode === 'custom') {
+    for (const item of page.spec.constraints.items) constraintMap.set(item.sourceConstraintId ?? item.id, item)
+  }
   try {
     const result = await api('', 'POST', {
       projectId: project.id,
       pageId: page.id,
       baseline,
       html: original,
+      constraints: [...constraintMap.values()].map(({ name, description, html }) => ({
+        name,
+        description,
+        html,
+      })),
     })
     if (
       disposed ||

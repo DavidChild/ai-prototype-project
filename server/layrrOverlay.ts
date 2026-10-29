@@ -44,6 +44,10 @@ export function adaptLayrrWorkspaceOverlay(source: string): string {
     '    .${L}-ac img{width:20px;height:20px;object-fit:cover;border-radius:3px;flex:0 0 auto}',
     '    .${L}-ac span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
     '    .${L}-ad{border:0;background:transparent;color:${C.textDim};cursor:pointer;padding:0;font-size:${size.base};line-height:1}',
+    '    .${L}-cr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:10px 10px 0}',
+    '    .${L}-cs{min-width:0;height:34px;border:1px solid ${C.border};border-radius:${radius.md};background:${C.surface};color:${C.text};padding:0 8px;font:inherit}',
+    '    .${L}-cb{height:34px;padding:0 12px;border:1px solid rgba(96,165,250,.55);border-radius:${radius.md};background:rgba(59,130,246,.16);color:#bfdbfe;cursor:pointer;font-size:${size.sm};font-weight:600;white-space:nowrap}',
+    '    .${L}-cb:disabled{opacity:.4;cursor:default}',
   ].join('\n')
   const attachmentHtmlNeedle = [
     '      <div class="${L}-ia">',
@@ -54,6 +58,10 @@ export function adaptLayrrWorkspaceOverlay(source: string): string {
     '      </div>',
   ].join('\n')
   const attachmentHtml = [
+    '      <div class="${L}-cr">',
+    '        <select class="${L}-cs" aria-label="选择约束替换"><option value="">选择约束替换…</option></select>',
+    '        <button type="button" class="${L}-cb" disabled>替换选中元素</button>',
+    '      </div>',
     '      <div class="${L}-ia">',
     '        <div class="${L}-ir">',
     '          <textarea class="${L}-in" placeholder="Describe the change..." rows="1"></textarea>',
@@ -178,32 +186,32 @@ export function adaptLayrrWorkspaceOverlay(source: string): string {
     [attachmentHtmlNeedle, attachmentHtml],
     [
       '      sendBtnEl: null,\n        pollTimer: null,',
-      '      sendBtnEl: null,\n        attachments: [],\n        attachmentInputEl: null,\n        attachmentListEl: null,\n        pollTimer: null,',
+      '      sendBtnEl: null,\n        attachments: [],\n        attachmentInputEl: null,\n        attachmentListEl: null,\n        constraintSelectEl: null,\n        constraintButtonEl: null,\n        pollTimer: null,',
     ],
     [attachmentHelpersNeedle, attachmentHelpers],
     [
       '      const instruction = input.value.trim();\n      if (!instruction) return;',
-      '      const typedInstruction = input.value.trim();\n      const instruction = typedInstruction || (app2.attachments?.length ? "请根据附件参考图修改选中元素，尽量还原图片中与选中区域相关的内容和样式。" : "");\n      if (!instruction) return;',
+      '      const typedInstruction = input.value.trim();\n      const constraintIndex = Number(app2.constraintSelectEl?.value);\n      const constraint = app2.constraintSelectEl?.value !== "" && Number.isInteger(constraintIndex) ? (window.__QP_LAYRR_CONSTRAINTS__ || [])[constraintIndex] : undefined;\n      const instruction = typedInstruction || (constraint ? `使用约束“${constraint.name}”替换选中元素` : app2.attachments?.length ? "请根据附件参考图修改选中元素，尽量还原图片中与选中区域相关的内容和样式。" : "");\n      if (!instruction) return;',
     ],
     [
       'instruction, sourceInfo }));',
-      'instruction, sourceInfo, attachments: app2.attachments }));',
+      'instruction, sourceInfo, attachments: app2.attachments, constraint }));',
     ],
     [
       '          instruction,\n          sourceInfo,\n          elements: resolvedElements',
-      '          instruction,\n          sourceInfo,\n          attachments: app2.attachments,\n          elements: resolvedElements',
+      '          instruction,\n          sourceInfo,\n          attachments: app2.attachments,\n          constraint,\n          elements: resolvedElements',
     ],
     [
       '      app2.sendBtnEl = panel.querySelector(`.${L4}-sb`);',
-      '      app2.sendBtnEl = panel.querySelector(`.${L4}-sb`);\n      app2.attachmentInputEl = panel.querySelector(`.${L4}-af`);\n      app2.attachmentListEl = panel.querySelector(`.${L4}-al`);\n      app2.attachments = [];',
+      '      app2.sendBtnEl = panel.querySelector(`.${L4}-sb`);\n      app2.attachmentInputEl = panel.querySelector(`.${L4}-af`);\n      app2.attachmentListEl = panel.querySelector(`.${L4}-al`);\n      app2.constraintSelectEl = panel.querySelector(`.${L4}-cs`);\n      app2.constraintButtonEl = panel.querySelector(`.${L4}-cb`);\n      app2.attachments = [];\n      for (const [index, item] of (window.__QP_LAYRR_CONSTRAINTS__ || []).entries()) {\n        const option = document.createElement("option");\n        option.value = String(index);\n        option.textContent = item.name;\n        app2.constraintSelectEl?.appendChild(option);\n      }',
     ],
     [
       '      app2.sendBtnEl.addEventListener("click", sendEdit);',
-      '      app2.sendBtnEl.addEventListener("click", sendEdit);\n      panel.querySelector(`.${L4}-ab`)?.addEventListener("click", () => app2.attachmentInputEl?.click());\n      app2.attachmentInputEl?.addEventListener("change", () => {\n        const file = app2.attachmentInputEl?.files?.[0];\n        if (file) void addEditAttachment2(file).catch((error) => toast2(error.message || "参考图读取失败", "error"));\n      });\n      panel.addEventListener("paste", (event) => {\n        const imageItem = Array.from(event.clipboardData?.items || []).find((item) => item.kind === "file" && ["image/png", "image/jpeg", "image/webp"].includes(item.type));\n        const file = imageItem?.getAsFile();\n        if (!file) return;\n        event.preventDefault();\n        void addEditAttachment2(file).catch((error) => toast2(error.message || "参考图读取失败", "error"));\n      });',
+      '      app2.sendBtnEl.addEventListener("click", sendEdit);\n      app2.constraintSelectEl?.addEventListener("change", () => {\n        if (app2.constraintButtonEl) app2.constraintButtonEl.disabled = app2.constraintSelectEl.value === "";\n      });\n      app2.constraintButtonEl?.addEventListener("click", () => {\n        if (!app2.selectedEl) { toast2("请先选择需要替换的元素", "error"); return; }\n        void sendEdit();\n      });\n      panel.querySelector(`.${L4}-ab`)?.addEventListener("click", () => app2.attachmentInputEl?.click());\n      app2.attachmentInputEl?.addEventListener("change", () => {\n        const file = app2.attachmentInputEl?.files?.[0];\n        if (file) void addEditAttachment2(file).catch((error) => toast2(error.message || "参考图读取失败", "error"));\n      });\n      panel.addEventListener("paste", (event) => {\n        const imageItem = Array.from(event.clipboardData?.items || []).find((item) => item.kind === "file" && ["image/png", "image/jpeg", "image/webp"].includes(item.type));\n        const file = imageItem?.getAsFile();\n        if (!file) return;\n        event.preventDefault();\n        void addEditAttachment2(file).catch((error) => toast2(error.message || "参考图读取失败", "error"));\n      });',
     ],
     [
       '      if (msg.success) {\n        app2.editCount++;',
-      '      if (msg.success) {\n        clearEditAttachments2();\n        app2.editCount++;',
+      '      if (msg.success) {\n        clearEditAttachments2();\n        if (app2.constraintSelectEl) app2.constraintSelectEl.value = "";\n        if (app2.constraintButtonEl) app2.constraintButtonEl.disabled = true;\n        app2.editCount++;',
     ],
     [
       '          input.value = "";\n          input.style.height = "auto";',

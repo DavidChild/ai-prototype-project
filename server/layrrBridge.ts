@@ -22,6 +22,7 @@ type Edit = {
   selector: string
   elements?: { selector: string }[]
   attachments?: EditAttachment[]
+  constraint?: { name: string; description: string; html: string }
 }
 type Submission = {
   id: string
@@ -110,6 +111,26 @@ function validateEditAttachments(value: unknown): EditAttachment[] {
       throw new Error('参考图无效或超过 2 MB')
     return { name: name || '参考图', mimeType, base64 }
   })
+}
+
+function validateConstraints(value: unknown): Array<{ name: string; description: string; html: string }> {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.length > 16) throw new Error('约束数据无效')
+  return value.map((item) => {
+    if (!item || typeof item !== 'object') throw new Error('约束数据无效')
+    const input = item as Record<string, unknown>
+    const name = String(input.name ?? '').trim().slice(0, 120)
+    const description = String(input.description ?? '').trim().slice(0, 2000)
+    const html = String(input.html ?? '').trim()
+    if (!name || !html || html.length > 30000) throw new Error('约束名称或 HTML 无效')
+    return { name, description, html }
+  })
+}
+
+function validateEditConstraint(value: unknown) {
+  if (value === undefined) return undefined
+  const constraints = validateConstraints([value])
+  return constraints[0]
 }
 
 function prepareLayrrPreviewHtml(html: string): string {
@@ -272,6 +293,7 @@ export function layrrBridgePlugin(
             await mkdir(folder, { recursive: true })
             const file = join(folder, 'index.html')
             await writeFile(file, input.html, 'utf8')
+            const constraints = validateConstraints(input.constraints)
             const overlay = join(require.resolve('layrr/package.json'), '..', 'dist', 'overlay.js')
             const prefix = `/preview/${id}`
             const overlaySource = adaptLayrrWorkspaceOverlay(await readFile(overlay, 'utf8')).replaceAll(
@@ -424,10 +446,15 @@ export function layrrBridgePlugin(
                   return
                 }
                 let html = prepareLayrrPreviewHtml(await readFile(file, 'utf8'))
+                const constraintData = JSON.stringify(constraints)
+                  .replaceAll('&', '\\u0026')
+                  .replaceAll('<', '\\u003c')
+                  .replaceAll('>', '\\u003e')
+                const constraintScript = `<script>window.__QP_LAYRR_CONSTRAINTS__=${constraintData}</script>`
                 const script = `<script src="${prefix}/__layrr__/overlay.js"></script>`
                 html = /<\/body>/i.test(html)
-                  ? html.replace(/<\/body>/i, `${script}</body>`)
-                  : html + script
+                  ? html.replace(/<\/body>/i, `${constraintScript}${script}</body>`)
+                  : html + constraintScript + script
                 previewRes.setHeader('Content-Type', 'text/html; charset=utf-8')
                 previewRes.setHeader(
                   'Content-Security-Policy',
@@ -464,6 +491,7 @@ export function layrrBridgePlugin(
                       throw new Error('无效修改请求')
                     edit.instruction = edit.instruction.trim()
                     edit.attachments = validateEditAttachments(edit.attachments)
+                    edit.constraint = validateEditConstraint(edit.constraint)
                     session.job = { id: randomBytes(12).toString('hex'), edit, delivered: false }
                     session.lastResult = null
                   } catch (error) {
