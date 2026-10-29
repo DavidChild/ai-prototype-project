@@ -102,6 +102,14 @@ test('Layrr workspaces serve official overlay, accept local jobs and isolate fil
   const servedOverlay = await overlayResponse.text()
   assert.match(servedOverlay, /__LAYRR_LOADED__/)
   assert.match(servedOverlay, /CSS\.escape\(className\)/)
+  assert.match(servedOverlay, new RegExp(prefix + '/__layrr__/fonts/lucide\\.css'))
+  assert.doesNotMatch(servedOverlay, /["']\/__layrr__\/fonts\//)
+  const iconCss = await fetch(previewOrigin + prefix + '/__layrr__/fonts/lucide.css')
+  assert.equal(iconCss.status, 200)
+  assert.match(await iconCss.text(), /@font-face/)
+  const iconFont = await fetch(previewOrigin + prefix + '/__layrr__/fonts/lucide.woff2')
+  assert.equal(iconFont.status, 200)
+  assert.ok((await iconFont.arrayBuffer()).byteLength > 1000)
   assert.equal((await fetch(previewOrigin + '/package.json')).status, 404)
   const manualUrl = publicUrl + '__layrr__/manual-data'
   const manualHeaders = {

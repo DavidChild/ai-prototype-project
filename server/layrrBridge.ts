@@ -273,8 +273,11 @@ export function layrrBridgePlugin(
             const file = join(folder, 'index.html')
             await writeFile(file, input.html, 'utf8')
             const overlay = join(require.resolve('layrr/package.json'), '..', 'dist', 'overlay.js')
-            const overlaySource = adaptLayrrWorkspaceOverlay(await readFile(overlay, 'utf8'))
             const prefix = `/preview/${id}`
+            const overlaySource = adaptLayrrWorkspaceOverlay(await readFile(overlay, 'utf8')).replaceAll(
+              '/__layrr__/fonts/',
+              `${prefix}/__layrr__/fonts/`,
+            )
             const sockets = new Set<WebSocket>()
             const server = createServer(async (previewReq, previewRes) => {
               const rawPath = (previewReq.url ?? '').split('?')[0]!
