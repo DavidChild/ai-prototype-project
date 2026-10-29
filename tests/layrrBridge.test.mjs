@@ -62,9 +62,10 @@ test('Layrr workspaces serve official overlay, accept local jobs and isolate fil
     body: '{}',
   })
   assert.equal(forbidden.status, 403)
+  const initialHtml = `<html><head><meta http-equiv="Content-Security-Policy" content="script-src 'self'"></head><body><h1>old</h1></body></html>`
   const session = (
     await request('', 'POST', {
-      html: '<html><body><h1>old</h1></body></html>',
+      html: initialHtml,
       projectId: 'iteration',
       pageId: 'page',
       baseline: 'baseline',
@@ -75,9 +76,13 @@ test('Layrr workspaces serve official overlay, accept local jobs and isolate fil
   assert.equal(session.url, `/preview/${session.id}/`)
   assert.doesNotMatch(session.url, /127\.0\.0\.1|localhost/)
   const publicUrl = origin + session.url
+  const initialPreview = await (await fetch(publicUrl)).text()
+  assert.doesNotMatch(initialPreview, /Content-Security-Policy/i)
+  assert.match(initialPreview, /__layrr__\/overlay\.js/)
+  assert.equal(await readFile(session.file, 'utf8'), initialHtml)
   const documentUrl = origin + '/api/layrr/' + session.id + '/document'
   const documentState = await fetch(documentUrl, { headers }).then((response) => response.json())
-  assert.equal(documentState.html, '<html><body><h1>old</h1></body></html>')
+  assert.equal(documentState.html, initialHtml)
   const savedDocument = await fetch(documentUrl, {
     method: 'POST',
     headers,

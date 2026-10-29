@@ -185,12 +185,12 @@ watch(previewMode, (mode) => {
         style="width: 90px"
         @update:value="(v: number | 'fit') => (zoom = v)"
       />
-      <div style="flex: 1" />
       <LayrrEditor
         v-if="previewMode === 'prototype' && auth.canEdit"
         @preview="(url) => (aiPreviewUrl = url)"
         @error="(error) => (aiWorkspaceError = error)"
       />
+      <div style="flex: 1" />
       <template v-if="auth.canEdit && wb.selectedPage && !wb.selectedPage.spec.groupOnly">
         <n-button
           v-if="

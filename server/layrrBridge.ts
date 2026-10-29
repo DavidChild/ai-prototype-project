@@ -112,6 +112,13 @@ function validateEditAttachments(value: unknown): EditAttachment[] {
   })
 }
 
+function stripPreviewContentSecurityPolicy(html: string): string {
+  return html.replace(
+    /<meta\b[^>]*\bhttp-equiv\s*=\s*(?:"content-security-policy"|'content-security-policy'|content-security-policy)[^>]*>/gi,
+    '',
+  )
+}
+
 /** Uses the official Layrr overlay, with a 小豆原型 provider/patch adapter instead of a CLI agent. */
 export function layrrBridgePlugin(
   config: MysqlStorageConfig,
@@ -414,7 +421,7 @@ export function layrrBridgePlugin(
                   previewRes.writeHead(404).end()
                   return
                 }
-                let html = await readFile(file, 'utf8')
+                let html = stripPreviewContentSecurityPolicy(await readFile(file, 'utf8'))
                 const script = `<script src="${prefix}/__layrr__/overlay.js"></script>`
                 html = /<\/body>/i.test(html)
                   ? html.replace(/<\/body>/i, `${script}</body>`)
