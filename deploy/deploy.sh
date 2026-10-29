@@ -254,6 +254,7 @@ write_runtime_env() {
   temp="$(mktemp)"
   {
     printf 'NODE_ENV=production\n'
+    printf 'APP_PORT=%s\n' "$(quote_env "${APP_PORT}")"
     printf 'MYSQL_HOST=%s\n' "$(quote_env "${MYSQL_HOST}")"
     printf 'MYSQL_PORT=%s\n' "$(quote_env "${MYSQL_PORT}")"
     printf 'MYSQL_USER=%s\n' "$(quote_env "${MYSQL_USER}")"
@@ -291,7 +292,7 @@ User=${APP_USER}
 Group=${APP_USER}
 WorkingDirectory=${APP_ROOT}/current
 EnvironmentFile=${RUNTIME_ENV_FILE}
-ExecStart=${node_bin} ${APP_ROOT}/current/node_modules/vite/bin/vite.js preview --config vite.production.config.ts --host 127.0.0.1 --port ${APP_PORT} --strictPort
+ExecStart=${node_bin} --import tsx ${APP_ROOT}/current/server/productionServer.ts
 Restart=always
 RestartSec=3
 TimeoutStopSec=20
@@ -504,6 +505,8 @@ prepare_frontend_and_runtime() {
     fail "预构建前端包包含不安全路径：${DIST_ARCHIVE}"
   fi
   log "解压预构建前端：${DIST_ARCHIVE}（跳过服务器前端构建）"
+  [[ "${RELEASE_DIR}" == "${APP_ROOT}/app" ]] || fail "拒绝清理非预期部署目录：${RELEASE_DIR}"
+  rm -rf -- "${RELEASE_DIR}/dist"
   unzip -q -o "${archive}" -d "${RELEASE_DIR}"
   [[ -s "${RELEASE_DIR}/dist/index.html" ]] || fail "${DIST_ARCHIVE} 中缺少 dist/index.html"
   [[ -s "${RELEASE_DIR}/dist/tmagic-editor.html" ]] || fail "${DIST_ARCHIVE} 中缺少 dist/tmagic-editor.html"
@@ -514,7 +517,7 @@ prepare_frontend_and_runtime() {
   install -m 0644 "${RELEASE_DIR}/deploy/runtime/package.json" "${RELEASE_DIR}/.runtime/package.json"
   install -m 0644 "${RELEASE_DIR}/deploy/runtime/package-lock.json" "${RELEASE_DIR}/.runtime/package-lock.json"
   npm ci --prefix "${RELEASE_DIR}/.runtime" --omit=dev --no-audit --no-fund
-  ln -s .runtime/node_modules "${RELEASE_DIR}/node_modules"
+  ln -sfn .runtime/node_modules "${RELEASE_DIR}/node_modules"
 }
 
 install_packages
@@ -536,7 +539,7 @@ else
   usermod -a -G "${APP_USER}" "${APP_USER}"
 fi
 
-install -d -m 0755 "${APP_ROOT}" "${APP_ROOT}/releases"
+install -d -m 0755 "${APP_ROOT}"
 ensure_build_memory
 NGINX_USER="$(awk '$1 == "user" { gsub(";", "", $2); print $2; exit }' /etc/nginx/nginx.conf)"
 NGINX_USER="${NGINX_USER:-www-data}"
@@ -547,18 +550,19 @@ fi
 write_runtime_env
 create_database
 
-RELEASE_ID="$(date '+%Y%m%d%H%M%S')-$$"
-RELEASE_DIR="${APP_ROOT}/releases/${RELEASE_ID}"
-PREVIOUS_RELEASE=""
-if [[ -L "${APP_ROOT}/current" ]]; then
-  PREVIOUS_RELEASE="$(readlink -f "${APP_ROOT}/current")"
-elif [[ -e "${APP_ROOT}/current" ]]; then
+RELEASE_DIR="${APP_ROOT}/app"
+if [[ -e "${APP_ROOT}/current" && ! -L "${APP_ROOT}/current" ]]; then
   fail "${APP_ROOT}/current 已存在且不是软链接，请人工处理后重试"
 fi
 
-log "复制项目到发布目录 ${RELEASE_DIR}"
+if systemctl is-active --quiet "${SERVICE_NAME}"; then
+  log "停止应用服务以执行固定目录更新"
+  systemctl stop "${SERVICE_NAME}"
+fi
+
+log "同步项目到固定部署目录 ${RELEASE_DIR}"
 install -d -m 0755 "${RELEASE_DIR}"
-rsync -a \
+rsync -a --delete \
   --exclude='.git/' \
   --exclude='node_modules/' \
   --exclude='dist/' \
@@ -584,7 +588,6 @@ write_nginx_config "${INITIAL_TLS}"
 systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}" >/dev/null
 nginx -t || {
-  if [[ -n "${PREVIOUS_RELEASE}" ]]; then ln -sfn "${PREVIOUS_RELEASE}" "${APP_ROOT}/current"; fi
   fail "Nginx 配置检查失败"
 }
 
@@ -592,11 +595,6 @@ log "启动应用服务"
 systemctl restart "${SERVICE_NAME}"
 if ! wait_for_backend; then
   journalctl -u "${SERVICE_NAME}" -n 80 --no-pager || true
-  if [[ -n "${PREVIOUS_RELEASE}" ]]; then
-    log "新版本启动失败，恢复上一版本"
-    ln -sfn "${PREVIOUS_RELEASE}" "${APP_ROOT}/current"
-    systemctl restart "${SERVICE_NAME}" || true
-  fi
   fail "应用服务健康检查失败"
 fi
 
@@ -629,4 +627,4 @@ log "部署完成"
 printf '访问地址: %s://%s\n' "${PUBLIC_SCHEME}" "${DOMAIN}"
 printf '服务状态: systemctl status %s\n' "${SERVICE_NAME}"
 printf '服务日志: journalctl -u %s -f\n' "${SERVICE_NAME}"
-printf '当前版本: %s\n' "${RELEASE_ID}"
+printf '部署目录: %s\n' "${RELEASE_DIR}"

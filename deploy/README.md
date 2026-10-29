@@ -9,7 +9,9 @@
 - Nginx 直接提供 `dist` 前端静态文件。
 - Node/Vite 轻量生产进程仅监听 `127.0.0.1`，承载 MySQL 存储、登录、AI 代理和 Layrr 动态接口。
 - systemd 负责开机启动、异常重启和日志收集。
-- 每次部署创建独立版本目录，启动失败会自动恢复上一版本。
+- 所有更新都同步到固定的 `/opt/xiaodou-prototype/app` 目录，不再按发布时间创建新目录。
+
+固定目录更新期间脚本会短暂停止应用服务，避免运行中的进程读取到新旧混合的依赖；更新并通过健康检查后会重新启动。
 
 ## 首次部署
 
@@ -71,8 +73,8 @@ systemctl list-timers | grep certbot
 
 ## 生成的文件
 
-- 应用版本：`/opt/xiaodou-prototype/releases/<发布时间>`
-- 当前版本软链接：`/opt/xiaodou-prototype/current`
+- 固定应用目录：`/opt/xiaodou-prototype/app`
+- 稳定入口软链接：`/opt/xiaodou-prototype/current`（始终指向 `app`）
 - 服务环境变量：`/etc/xiaodou-prototype.env`（权限 `0640`）
 - Nginx 配置：`/etc/nginx/conf.d/xiaodou-prototype.conf`
 - Nginx 路由片段：`/etc/nginx/snippets/xiaodou-prototype-locations.conf`
