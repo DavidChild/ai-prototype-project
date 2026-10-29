@@ -83,7 +83,7 @@ onMounted(async () => { await settings.loadTenantConfig(); selectionReady = true
     <template v-if="section === 'providers'">
     <n-h3>服务商</n-h3>
     <n-alert type="info" :bordered="false" style="margin-bottom: 16px">
-      自有服务商配置归属当前企业或团队。平台通道由运营端开放，
+      自有服务商配置归属当前企业或团队。平台通道由平台开放，
       使用平台通道产生的 Token 计入平台渠道；使用自有通道则计入企业自己的渠道。
     </n-alert>
     <n-grid :cols="2" :x-gap="12" :y-gap="12">

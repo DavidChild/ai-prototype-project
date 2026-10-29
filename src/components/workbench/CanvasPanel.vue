@@ -185,11 +185,6 @@ watch(previewMode, (mode) => {
         style="width: 90px"
         @update:value="(v: number | 'fit') => (zoom = v)"
       />
-      <LayrrEditor
-        v-if="previewMode === 'prototype' && auth.canEdit"
-        @preview="(url) => (aiPreviewUrl = url)"
-        @error="(error) => (aiWorkspaceError = error)"
-      />
       <div style="flex: 1" />
       <template v-if="auth.canEdit && wb.selectedPage && !wb.selectedPage.spec.groupOnly">
         <n-button
@@ -212,6 +207,11 @@ watch(previewMode, (mode) => {
           {{ wb.selectedHtml ? '重新生成' : '生成' }}
         </n-button>
       </template>
+      <LayrrEditor
+        v-if="previewMode === 'prototype' && auth.canEdit"
+        @preview="(url) => (aiPreviewUrl = url)"
+        @error="(error) => (aiWorkspaceError = error)"
+      />
     </div>
 
     <n-modal
