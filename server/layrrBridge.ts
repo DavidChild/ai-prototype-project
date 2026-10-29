@@ -112,11 +112,10 @@ function validateEditAttachments(value: unknown): EditAttachment[] {
   })
 }
 
-function stripPreviewContentSecurityPolicy(html: string): string {
-  return html.replace(
-    /<meta\b[^>]*\bhttp-equiv\s*=\s*(?:"content-security-policy"|'content-security-policy'|content-security-policy)[^>]*>/gi,
-    '',
-  )
+function prepareLayrrPreviewHtml(html: string): string {
+  // The random, same-origin workspace has its own response CSP. Remove prototype
+  // http-equiv directives so they cannot block Layrr or navigate the editor away.
+  return html.replace(/<meta\b[^>]*\bhttp-equiv\b[^>]*>/gi, '')
 }
 
 /** Uses the official Layrr overlay, with a 小豆原型 provider/patch adapter instead of a CLI agent. */
@@ -421,12 +420,16 @@ export function layrrBridgePlugin(
                   previewRes.writeHead(404).end()
                   return
                 }
-                let html = stripPreviewContentSecurityPolicy(await readFile(file, 'utf8'))
+                let html = prepareLayrrPreviewHtml(await readFile(file, 'utf8'))
                 const script = `<script src="${prefix}/__layrr__/overlay.js"></script>`
                 html = /<\/body>/i.test(html)
                   ? html.replace(/<\/body>/i, `${script}</body>`)
                   : html + script
                 previewRes.setHeader('Content-Type', 'text/html; charset=utf-8')
+                previewRes.setHeader(
+                  'Content-Security-Policy',
+                  "default-src 'self' data: blob: https: http:; script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https: http:; style-src 'self' 'unsafe-inline' data: https: http:; img-src * data: blob:; font-src * data:; connect-src * ws: wss:; frame-src * data: blob:",
+                )
                 previewRes.end(html)
               } catch {
                 previewRes.writeHead(500).end('工作区读取失败')

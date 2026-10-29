@@ -76,9 +76,11 @@ test('Layrr workspaces serve official overlay, accept local jobs and isolate fil
   assert.equal(session.url, `/preview/${session.id}/`)
   assert.doesNotMatch(session.url, /127\.0\.0\.1|localhost/)
   const publicUrl = origin + session.url
-  const initialPreview = await (await fetch(publicUrl)).text()
+  const initialPreviewResponse = await fetch(publicUrl)
+  const initialPreview = await initialPreviewResponse.text()
   assert.doesNotMatch(initialPreview, /Content-Security-Policy/i)
   assert.match(initialPreview, /__layrr__\/overlay\.js/)
+  assert.match(initialPreviewResponse.headers.get('content-security-policy'), /'unsafe-eval'/)
   assert.equal(await readFile(session.file, 'utf8'), initialHtml)
   const documentUrl = origin + '/api/layrr/' + session.id + '/document'
   const documentState = await fetch(documentUrl, { headers }).then((response) => response.json())
