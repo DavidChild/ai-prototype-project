@@ -71,17 +71,24 @@ const annotatedHtml = computed(() =>
   }),
 )
 
-// Only the isolated bridge origin can retain its origin for Layrr's WebSocket.
+// Layrr uses a same-origin /preview proxy in production and an isolated
+// localhost origin in development. Only accept the bridge's exact URL shape.
 const isolatedPreview = computed(() => {
   if (props.annotationMode || !props.previewUrl) return ''
   try {
-    const url = new URL(props.previewUrl)
-    if (
+    const url = new URL(props.previewUrl, window.location.href)
+    const sameOriginPreview =
+      url.origin === window.location.origin && /^\/preview\/[a-f0-9]{48}\/$/.test(url.pathname)
+    const localPreview =
       url.protocol === 'http:' &&
-      url.hostname === '127.0.0.1' && url.port &&
+      url.hostname === '127.0.0.1' &&
+      !!url.port &&
       url.origin !== window.location.origin &&
-      !url.username && !url.password &&
       /^\/preview\/[a-f0-9]{48}\/$/.test(url.pathname)
+    if (
+      !url.username &&
+      !url.password &&
+      (sameOriginPreview || localPreview)
     ) return url.href
   } catch {
     // Fall back to the opaque-origin HTML preview.

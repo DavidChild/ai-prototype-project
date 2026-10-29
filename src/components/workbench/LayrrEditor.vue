@@ -67,8 +67,11 @@ async function api(path: string, method = 'GET', data?: unknown) {
     headers: { 'x-quickpage-layrr': '1', ...(data ? { 'Content-Type': 'application/json' } : {}) },
     body: data ? JSON.stringify(data) : undefined,
   })
-  if (!response.headers.get('content-type')?.includes('application/json'))
-    throw new Error('Layrr 仅在 npm run dev 下可用，请重启开发服务')
+  if (!response.headers.get('content-type')?.includes('application/json')) {
+    const responseText = (await response.text()).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+    const detail = responseText ? `：${responseText.slice(0, 160)}` : ''
+    throw new Error(`Layrr 服务响应异常（HTTP ${response.status}）${detail}`)
+  }
   const result = await response.json()
   if (!response.ok) throw new Error(result.error ?? 'Layrr 请求失败')
   return result
