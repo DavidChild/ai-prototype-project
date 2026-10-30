@@ -12,6 +12,7 @@ import type { Page } from '@/types/page'
 import type { Project } from '@/types/project'
 import type { IterationTask, IterationTaskEndpoint } from '@/types/iterationTask'
 import { formatTime } from '@/utils/format'
+import { nanoid } from 'nanoid'
 
 type PageVisualStatus = 'pending' | 'generating' | 'completed' | 'failed'
 
@@ -50,6 +51,9 @@ const liveHtml = ref<Record<string, string>>({})
 const expandedEndpointIds = ref<Set<string>>(new Set())
 const selectedPageKey = ref('')
 const previewRevision = ref(0)
+const detailMode = ref<'change' | 'conversation'>(route.query.adjust === '1' ? 'conversation' : 'change')
+const adjustmentText = ref('')
+const adjustmentSaving = ref(false)
 let controller: AbortController | null = null
 
 const completedCount = computed(
@@ -332,6 +336,36 @@ async function run() {
   }
 }
 
+async function submitAdjustment() {
+  const current = task.value
+  const content = adjustmentText.value.trim()
+  if (!current || !content || running.value || adjustmentSaving.value || current.status === 'cancelled') return
+  adjustmentSaving.value = true
+  try {
+    current.conversation ??= []
+    current.conversation.push({ id: nanoid(), role: 'user', content, createdAt: Date.now() })
+    for (const endpoint of current.endpoints) {
+      endpoint.aiSession.messages.push({ role: 'user', content: `用户对本次多端迭代提出补充调整：${content}\n请结合此前会话、现有规划和已生成结果，重新输出完整可执行规划。未被补充要求影响的内容保持不变。` })
+      endpoint.aiSession.updatedAt = Date.now()
+      endpoint.plan = undefined
+      endpoint.relatedPages = undefined
+      endpoint.planNeedsApply = !!endpoint.targetProjectId
+      endpoint.status = 'pending'
+      endpoint.error = undefined
+    }
+    current.status = 'pending'
+    current.error = undefined
+    task.value = await iterationTaskRepo.save(current)
+    adjustmentText.value = ''
+    message.success('补充要求已写入原 AI 会话，正在重新规划')
+    await run()
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '补充调整失败')
+  } finally {
+    adjustmentSaving.value = false
+  }
+}
+
 function stop() {
   controller?.abort()
   message.warning('已停止本轮执行，已完成的页面会继续保留')
@@ -502,8 +536,11 @@ onBeforeUnmount(() => controller?.abort())
       </main>
 
       <aside class="detail-panel">
-        <div class="panel-title"><strong>页面变更</strong></div>
-        <template v-if="selectedPage">
+        <div class="detail-tabs">
+          <button :class="{ active: detailMode === 'change' }" @click="detailMode = 'change'">页面变更</button>
+          <button :class="{ active: detailMode === 'conversation' }" @click="detailMode = 'conversation'">持续对话</button>
+        </div>
+        <template v-if="detailMode === 'change' && selectedPage">
           <dl class="change-summary">
             <dt>所属项目</dt><dd>{{ selectedEndpoint?.projectName }}</dd>
             <dt>目标版本</dt><dd>{{ selectedEndpoint?.targetIteration }}</dd>
@@ -520,13 +557,27 @@ onBeforeUnmount(() => controller?.abort())
           </section>
           <n-alert v-if="selectedPage.error" type="error" :bordered="false">{{ selectedPage.error }}</n-alert>
         </template>
-        <template v-else-if="selectedEndpoint">
+        <template v-else-if="detailMode === 'change' && selectedEndpoint">
           <section class="endpoint-overview">
             <strong>{{ selectedEndpoint.projectName }}</strong>
             <span>{{ selectedEndpoint.sourceIteration }} → {{ selectedEndpoint.targetIteration }}</span>
             <p>{{ selectedEndpoint.plan?.summary || '正在等待该端的页面迭代规划。' }}</p>
           </section>
           <n-alert v-if="selectedEndpoint.error" type="error" :bordered="false">{{ selectedEndpoint.error }}</n-alert>
+        </template>
+        <template v-else-if="detailMode === 'conversation'">
+          <div class="conversation-list">
+            <div v-if="!task.conversation?.length" class="conversation-empty">可继续补充业务要求，AI 会沿用各端原有会话重新规划，并在已创建的目标版本中继续修改。</div>
+            <article v-for="turn in task.conversation" :key="turn.id" :class="['conversation-turn', turn.role]">
+              <strong>{{ turn.role === 'user' ? '你' : 'AI 规划' }}</strong>
+              <p>{{ turn.content }}</p>
+              <span>{{ formatTime(turn.createdAt) }}</span>
+            </article>
+          </div>
+          <div class="conversation-compose">
+            <n-input v-model:value="adjustmentText" type="textarea" :rows="5" maxlength="4000" show-count placeholder="继续补充需要新增、修改或重新规划的内容…" :disabled="running || adjustmentSaving || task.status === 'cancelled'" />
+            <n-button type="primary" block :loading="adjustmentSaving || running" :disabled="!adjustmentText.trim() || task.status === 'cancelled'" @click="submitAdjustment">发送并继续规划修改</n-button>
+          </div>
         </template>
         <div class="task-meta">创建于 {{ formatTime(task.createdAt) }}<br>更新于 {{ formatTime(task.updatedAt) }}</div>
       </aside>
@@ -544,5 +595,6 @@ onBeforeUnmount(() => controller?.abort())
 .page-change-list{padding:0 8px 9px 30px}.page-change-row{width:100%;display:grid;grid-template-columns:18px minmax(0,1fr) auto;align-items:center;gap:7px;padding:8px 9px;border:0;border-radius:5px;color:inherit;background:transparent;text-align:left;cursor:pointer}.page-change-row:hover{background:var(--qp-hover)}.page-change-row.active{color:#6366f1;background:color-mix(in srgb,#6366f1 12%,transparent)}.page-status{display:grid;place-items:center;width:10px;height:10px;border:2px solid #94a3b8;border-radius:50%}.page-status[data-status=completed]{border-color:#22c55e;background:#22c55e}.page-status[data-status=failed]{border-color:#ef4444;background:#ef4444}.page-status[data-status=generating]{width:14px;height:14px;border:0}.page-name{min-width:0;display:grid;gap:2px}.page-name strong{overflow:hidden;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.page-name small,.page-state{color:var(--qp-text-muted);font-size:9px}.page-empty{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:9px;color:var(--qp-text-muted);font-size:10px;line-height:1.5}.page-empty>span{min-width:0;flex:1}.endpoint-retry{padding:7px 9px 2px;text-align:right}
 .preview-panel{display:flex;flex-direction:column;min-width:0;background:var(--qp-canvas-bg)}.preview-toolbar{height:46px;display:flex;flex-shrink:0;align-items:center;justify-content:space-between;gap:12px;padding:0 14px;border-bottom:1px solid var(--qp-border);background:var(--qp-pane)}.preview-toolbar>span{color:var(--qp-text-muted);font-size:11px}.preview-title{min-width:0;display:flex;align-items:center;gap:7px}.preview-title>strong{overflow:hidden;font-size:12px;text-overflow:ellipsis;white-space:nowrap}.preview-stage{min-height:0;flex:1;display:grid;place-items:center;padding:18px;overflow:hidden}.prototype-frame-wrap{position:relative;width:100%;height:100%;overflow:hidden;border:1px solid var(--qp-border);background:white;box-shadow:0 8px 26px rgba(0,0,0,.08)}.prototype-frame{width:100%;height:100%;border:0;background:white}.preview-progress{position:absolute;top:14px;left:50%;display:flex;align-items:center;gap:10px;padding:9px 13px;border:1px solid rgba(99,102,241,.24);border-radius:6px;background:color-mix(in srgb,var(--qp-pane) 94%,transparent);box-shadow:0 8px 24px rgba(0,0,0,.14);transform:translateX(-50%);pointer-events:none}.preview-progress div{display:grid;gap:2px}.preview-progress strong{font-size:11px}.preview-progress span{color:var(--qp-text-muted);font-size:9px;white-space:nowrap}.preview-placeholder{display:flex;align-items:center;gap:14px;color:var(--qp-text-muted)}.preview-placeholder div{display:grid;gap:5px}.preview-placeholder strong{color:var(--qp-text);font-size:13px}.preview-placeholder span{font-size:11px}
 .detail-panel{padding-bottom:20px}.change-summary{display:grid;grid-template-columns:72px minmax(0,1fr);gap:10px;margin:0;padding:14px;font-size:11px}.change-summary dt{color:var(--qp-text-muted)}.change-summary dd{margin:0;overflow-wrap:anywhere}.change-section{margin:0 14px 14px;padding:12px;border:1px solid var(--qp-border);border-radius:5px}.change-section>strong{font-size:11px}.change-section p{margin:7px 0 0;color:var(--qp-text-muted);font-size:11px;line-height:1.65}.change-section ul{margin:8px 0 0;padding-left:18px}.change-section li{margin:5px 0;font-size:11px;line-height:1.5}.detail-panel :deep(.n-alert){margin:0 14px}.endpoint-overview{display:grid;gap:6px;margin:14px;padding:12px;border:1px solid var(--qp-border);border-radius:5px}.endpoint-overview span,.endpoint-overview p{color:var(--qp-text-muted);font-size:11px}.endpoint-overview p{margin:5px 0 0;line-height:1.65}.task-meta{margin:16px 14px;color:var(--qp-text-muted);font-size:10px;line-height:1.7}
+.detail-tabs{height:46px;display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid var(--qp-border)}.detail-tabs button{border:0;border-bottom:2px solid transparent;color:var(--qp-text-muted);background:transparent;cursor:pointer}.detail-tabs button.active{border-bottom-color:#6366f1;color:#6366f1}.conversation-list{display:grid;gap:10px;padding:12px}.conversation-empty{padding:12px;color:var(--qp-text-muted);font-size:11px;line-height:1.7;border:1px dashed var(--qp-border);border-radius:5px}.conversation-turn{padding:10px;border:1px solid var(--qp-border);border-radius:5px;background:var(--qp-canvas-bg)}.conversation-turn.user{border-color:color-mix(in srgb,#6366f1 35%,var(--qp-border))}.conversation-turn strong{font-size:10px}.conversation-turn p{margin:6px 0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;line-height:1.65}.conversation-turn span{color:var(--qp-text-muted);font-size:9px}.conversation-compose{display:grid;gap:9px;padding:12px;border-top:1px solid var(--qp-border)}
 @media(max-width:1100px){.task-columns{grid-template-columns:280px minmax(0,1fr)}.detail-panel{display:none}}@media(max-width:720px){.task-columns{grid-template-columns:1fr}.endpoint-sidebar{display:none}.task-topbar{height:auto;flex-wrap:wrap;padding-block:8px}.task-stage{order:2;flex-basis:100%}.preview-stage{padding:8px}}
 </style>

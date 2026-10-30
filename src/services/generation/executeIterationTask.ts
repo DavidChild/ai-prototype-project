@@ -8,6 +8,7 @@ import { initializeIterationProject } from './initializeIteration'
 import type { InitializeIterationPageEvent } from './initializeIteration'
 import { planIterationRequirements } from './planIteration'
 import { iterationTaskRepo, pageRepo, projectRepo } from '@/services/storage/repositories'
+import { nanoid } from 'nanoid'
 
 export interface ExecuteIterationTaskInput {
   task: IterationTask
@@ -168,6 +169,22 @@ export async function executeIterationTask(input: ExecuteIterationTaskInput): Pr
     }
   }))
 
+  if (endpointsToPlan.length) {
+    const summaries = endpointsToPlan
+      .filter((endpoint) => endpoint.plan)
+      .map((endpoint) => `${endpoint.projectName}：${endpoint.plan!.summary}`)
+    if (summaries.length) {
+      task.conversation ??= []
+      task.conversation.push({
+        id: nanoid(),
+        role: 'assistant',
+        content: `已重新规划 ${summaries.length} 个端：\n${summaries.join('\n')}`,
+        createdAt: Date.now(),
+      })
+      await save()
+    }
+  }
+
   input.onStage?.('各端页面规划已完成，正在准备目标版本…')
   await save()
 
@@ -201,8 +218,18 @@ export async function executeIterationTask(input: ExecuteIterationTaskInput): Pr
     }
 
     try {
-      const target = (await projectRepo.list()).find((project) => project.id === endpoint.targetProjectId)
+      let target = (await projectRepo.list()).find((project) => project.id === endpoint.targetProjectId)
       if (!target) throw new Error('目标新版本已不存在')
+      if (endpoint.planNeedsApply) {
+        target = await projectRepo.applyIterationPlan(target.id, endpoint.sourceProjectId, {
+          text: task.requirementText,
+          documents: task.documents,
+          relatedPages: endpoint.relatedPages ?? [],
+          plan: endpoint.plan,
+        })
+        endpoint.planNeedsApply = false
+        await save()
+      }
       const provider = generationProvider(input, endpoint)
       endpoint.status = 'generating'
       endpoint.error = undefined

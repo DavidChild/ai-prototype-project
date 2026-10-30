@@ -103,8 +103,9 @@ test('MySQL project iteration copying and isolation', async (t) => {
     assert.equal(asset.docId, doc.id)
     assert.equal(await asset.blob.text(), 'image')
   })
+  let planned
   await t.test('requirement-led copy creates a baseline plus isolated update and new-page tasks', async () => {
-    const planned = await projectRepo.copyIteration('original', 'v1.2', {
+    planned = await projectRepo.copyIteration('original', 'v1.2', {
       text: '订单列表增加跨端一致的状态展示，并新增订单详情页。',
       documents: [{ fileName: 'v1.2需求.txt', fileType: 'txt', text: '状态规则', meta: {} }],
       relatedPages: [{ projectId: 'mobile-v1', projectName: '移动端项目', iteration: 'v1.0', platform: 'mobile', pageId: 'mobile-order', pageName: '订单', description: '移动订单页', blocks: ['订单卡片'] }],
@@ -138,6 +139,24 @@ test('MySQL project iteration copying and isolation', async (t) => {
     const copiedDocs = await docRepo.listByProject(planned.id)
     assert.ok(copiedDocs.some((doc) => doc.fileName === 'v1.2需求.txt' && doc.meta.iterationRequirement))
     assert.equal((await loadWorkbench('original')).htmlByPage.get('child-db'), '<p>当前内容</p>')
+  })
+  await t.test('continued conversation applies a new plan to the existing target version', async () => {
+    const before = await loadWorkbench(planned.id)
+    const existingCreated = before.pages.find((page) => page.spec.iterationChange?.action === 'create')
+    const adjusted = await projectRepo.applyIterationPlan(planned.id, 'original', {
+      text: '继续补充导出能力，并调整原有内容页。', documents: [], relatedPages: [],
+      plan: { productNature: '企业订单 B 端 PC 管理后台', summary: '继续调整内容页并新增导出页', changes: [
+        { action: 'update', sourcePageId: 'child-db', name: 'child', description: '补充导出入口', blocks: ['列表', '导出'], reason: '沿用原页面继续修改', relatedPageIds: [] },
+        { action: 'create', parentSourcePageId: 'menu-db', name: '导出记录', description: '查看导出任务', blocks: ['任务列表'], reason: '补充要求新增页面', relatedPageIds: [] },
+      ] },
+    })
+    assert.equal(adjusted.id, planned.id)
+    const after = await loadWorkbench(planned.id)
+    const updated = after.pages.find((page) => page.spec.id === 'child')
+    assert.equal(updated.iterationInitialized, false)
+    assert.equal(updated.spec.iterationChange.reason, '沿用原页面继续修改')
+    assert.ok(after.pages.some((page) => page.spec.name === '导出记录'))
+    assert.ok(after.pages.some((page) => page.id === existingCreated.id), 'unrelated existing pages are preserved')
   })
   await t.test('editing a copied iteration leaves the source unchanged', async () => {
     const child = (await pageRepo.listByProject(copied.id))[1]

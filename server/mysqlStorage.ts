@@ -209,6 +209,7 @@ const TENANT_ADMIN_ACTIONS = new Set([
 ])
 const WRITE_ACTIONS = new Set([
   'project.update', 'project.updateProfile', 'project.copyIteration', 'project.copyIterations', 'project.saveConstraint', 'project.removeConstraint',
+  'project.applyIterationPlan',
   'iterationTask.create', 'iterationTask.save', 'iterationTask.cancel', 'iterationTask.remove',
   'page.create', 'page.bulkCreate', 'page.update', 'page.saveAnnotationStore', 'page.remove', 'page.resetStale', 'page.saveHierarchy', 'page.rename', 'page.copy',
   'version.add', 'version.initializeHtml', 'version.importLayrr', 'doc.bulkCreate', 'asset.bulkCreate',
@@ -217,7 +218,7 @@ const WRITE_ACTIONS = new Set([
 async function projectIdForAction(db: Db, action: string, input: Entity): Promise<string | undefined> {
   if (['project.get','project.update','project.setHidden','project.removeCascade'].includes(action)) return input.id
   if (action === 'project.importBundle' && input.targetProjectId) return input.targetProjectId
-  if (['project.updateProfile','project.saveConstraint','project.removeConstraint','page.listByProject','page.resetStale','page.saveHierarchy','page.copy','version.initializeHtml','version.importLayrr','doc.listByProject','asset.listByProject','workbench.load'].includes(action)) return input.projectId
+  if (['project.updateProfile','project.applyIterationPlan','project.saveConstraint','project.removeConstraint','page.listByProject','page.resetStale','page.saveHierarchy','page.copy','version.initializeHtml','version.importLayrr','doc.listByProject','asset.listByProject','workbench.load'].includes(action)) return input.projectId
   if (['project.copyIteration'].includes(action)) return input.sourceId
   if (['project.updateFamily','project.removeFamily'].includes(action)) {
     const result=await rows<RowDataPacket[]>(db,'SELECT id FROM projects WHERE family_id=? LIMIT 1',[input.familyId]); return result[0]?.id as string|undefined
@@ -371,6 +372,7 @@ async function dispatch(pool: Pool, action: string, input: Entity, actor: Actor 
         requirementText: '',
         documents: [],
         images: [],
+        conversation: task.conversation ?? [],
         endpoints: (task.endpoints ?? []).map((endpoint: Entity) => ({
           sourceProjectId: endpoint.sourceProjectId,
           sourceFamilyId: endpoint.sourceFamilyId,
@@ -633,6 +635,51 @@ async function dispatch(pool: Pool, action: string, input: Entity, actor: Actor 
       const current = await project(db, input.projectId, true); if (!current) throw new Error('项目不存在，请重新打开项目')
       const items = (current.generationConstraints ?? []).filter((item: Entity) => item.id !== input.id)
       await updateProject(db, input.projectId, { generationConstraints: items }); return items
+    })
+    case 'project.applyIterationPlan': return transaction(pool, async (db) => {
+      const target = await project(db, input.projectId, true)
+      const source = await project(db, input.sourceProjectId)
+      if (!target || !source || target.tenantId !== user.tenantId || source.tenantId !== user.tenantId)
+        throw new Error('迭代来源或目标版本不存在')
+      if ((target.familyId ?? target.id) !== (source.familyId ?? source.id))
+        throw new Error('迭代来源与目标版本不属于同一项目')
+      const requirement = input.requirement && typeof input.requirement === 'object' ? input.requirement : {}
+      const plan = requirement.plan && typeof requirement.plan === 'object' ? requirement.plan : {}
+      const changes = Array.isArray(plan.changes) ? plan.changes.slice(0, 40) : []
+      if (!changes.length) throw new Error('新的迭代规划没有页面变更')
+      const sourceRows = await rows<RowDataPacket[]>(db, 'SELECT data FROM pages WHERE project_id=? ORDER BY sort_order', [source.id])
+      const targetRows = await rows<RowDataPacket[]>(db, 'SELECT data FROM pages WHERE project_id=? ORDER BY sort_order FOR UPDATE', [target.id])
+      const sourcePages = sourceRows.map((row) => parse<Entity>(row.data))
+      const targetPages = targetRows.map((row) => parse<Entity>(row.data))
+      const sourceById = new Map(sourcePages.map((page) => [page.id, page]))
+      const targetBySpecId = new Map(targetPages.map((page) => [page.spec.id, page]))
+      const relatedPages = Array.isArray(requirement.relatedPages) ? requirement.relatedPages.slice(0, 100) : []
+      const relatedIds = new Set(relatedPages.map((item: Entity) => String(item.pageId ?? '')))
+      const usedNames = new Set(targetPages.map((page) => String(page.spec.name).trim().toLowerCase()))
+      const now = Date.now()
+      for (const raw of changes) {
+        const action = raw?.action === 'create' ? 'create' : raw?.action === 'update' ? 'update' : ''
+        if (!action) continue
+        const refs = Array.isArray(raw.relatedPageIds) ? raw.relatedPageIds.map(String).filter((id: string) => relatedIds.has(id)).slice(0, 100) : []
+        const iterationChange = { action, reason: String(raw.reason ?? '根据补充要求继续调整').slice(0, 1200), relatedPageIds: refs }
+        if (action === 'update') {
+          const sourcePage = sourceById.get(String(raw.sourcePageId ?? ''))
+          const page = sourcePage ? targetBySpecId.get(sourcePage.spec.id) : undefined
+          if (!page || page.spec.groupOnly) continue
+          const next = { ...page, spec: { ...page.spec, description: String(raw.description || page.spec.description || '').slice(0,1200), blocks: Array.isArray(raw.blocks) ? raw.blocks.map(String).slice(0,16) : page.spec.blocks, iterationChange }, iterationInitialized: false, genStatus: 'idle', errorMessage: undefined, updatedAt: now }
+          await putPage(db, next, true)
+        } else {
+          const requested = String(raw.name ?? '').trim().slice(0,80)
+          if (!requested) continue
+          let name = requested, suffix = 2
+          while (usedNames.has(name.toLowerCase())) name = `${requested} ${suffix++}`
+          usedNames.add(name.toLowerCase())
+          const sourceParent = sourceById.get(String(raw.parentSourcePageId ?? ''))
+          await putPage(db, { id:nanoid(), projectId:target.id, sortOrder:targetPages.length++, genStatus:'idle', reviewPending:false, iterationInitialized:false, updatedAt:now, spec:{ id:nanoid(), name, ...(sourceParent ? { parentId:sourceParent.spec.id } : {}), description:String(raw.description ?? '').slice(0,1200), blocks:Array.isArray(raw.blocks)?raw.blocks.map(String).slice(0,16):[], iterationChange } })
+        }
+      }
+      const iterationRequirement = { ...(target.iterationRequirement ?? {}), text:String(requirement.text ?? target.iterationRequirement?.text ?? '').slice(0,200000), productNature:String(plan.productNature ?? '').slice(0,240), relatedPages, planSummary:String(plan.summary ?? '').slice(0,2000), updatedAt:now }
+      return updateProject(db, target.id, { iterationRequirement }, false)
     })
     case 'project.copyIteration':
     case 'project.copyIterations': return transaction(pool, async (db) => {

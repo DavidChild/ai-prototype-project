@@ -51,6 +51,8 @@ export const projectRepo = {
   updateFamily: (familyId: string, patch: { name?: string; hidden?: boolean }) => storageRequest<void>('project.updateFamily', { familyId, patch }),
   updateProfile: (projectId: string, profile: ProjectEndpointProfile) =>
     storageRequest<ProjectEndpointProfile>('project.updateProfile', { projectId, profile: clone(profile) }),
+  applyIterationPlan: (projectId: string, sourceProjectId: string, requirement: CopyIterationRequirementInput) =>
+    storageRequest<Project>('project.applyIterationPlan', { projectId, sourceProjectId, requirement: clone(requirement) }),
   removeFamily: (familyId: string) => storageRequest<void>('project.removeFamily', { familyId }),
   update: (id: string, patch: Partial<Omit<Project, 'id'>>) => storageRequest<void>('project.update', { id, ...patchPayload(patch) }),
   async saveConstraint(projectId: string, item: GenerationConstraint): Promise<GenerationConstraint[]> {

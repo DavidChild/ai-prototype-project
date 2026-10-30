@@ -31,6 +31,13 @@ export interface IterationTaskImage {
   base64: string
 }
 
+export interface IterationConversationTurn {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  createdAt: number
+}
+
 export interface IterationTaskEndpoint {
   sourceProjectId: string
   sourceFamilyId: string
@@ -42,6 +49,7 @@ export interface IterationTaskEndpoint {
   status: IterationTaskEndpointStatus
   aiSession: IterationAiSession
   plan?: IterationPlan
+  planNeedsApply?: boolean
   relatedPages?: IterationRelatedPage[]
   targetProjectId?: string
   completedPages?: number
@@ -57,6 +65,7 @@ export interface IterationTask {
   requirementText: string
   documents: IterationRequirementDocument[]
   images: IterationTaskImage[]
+  conversation?: IterationConversationTurn[]
   endpoints: IterationTaskEndpoint[]
   cancelledAt?: number
   cancelMode?: 'keep-versions' | 'delete-versions'

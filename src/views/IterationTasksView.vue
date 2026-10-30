@@ -124,6 +124,7 @@ onMounted(load)
           <span>{{ task.endpoints.length }} 个端 · {{ task.endpoints.filter((item) => item.status === 'completed').length }} 个完成</span>
           <n-space size="small">
             <n-button size="small" secondary @click="router.push(`/iterations/${task.id}`)">{{ task.status === 'completed' || task.status === 'cancelled' ? '查看工作区' : '进入工作区' }}</n-button>
+            <n-button v-if="task.status !== 'cancelled'" size="small" type="primary" secondary @click="router.push(`/iterations/${task.id}?adjust=1`)">继续调整</n-button>
             <n-button v-if="!['completed','cancelled'].includes(task.status)" size="small" quaternary type="error" @click="openCancel(task)">撤销任务</n-button>
           </n-space>
         </footer>
