@@ -252,7 +252,10 @@ export async function executeIterationTask(input: ExecuteIterationTaskInput): Pr
           })
         },
       })
-      endpoint.completedPages = Math.max(0, endpoint.totalPages - initialized.failed.length)
+      if (!initialized.total)
+        throw new Error('新规划尚未映射到具体页面，未执行任何页面修改')
+      endpoint.totalPages = initialized.total
+      endpoint.completedPages = initialized.completed
       endpoint.status = initialized.failed.length ? 'failed' : 'completed'
       endpoint.error = initialized.failed.length
         ? initialized.failed.map((item) => `${item.pageName}：${item.error}`).join('\n')

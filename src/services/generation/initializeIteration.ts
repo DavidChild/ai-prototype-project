@@ -82,6 +82,7 @@ export interface InitializeIterationPageEvent {
 }
 
 export interface InitializeIterationResult {
+  total: number
   completed: number
   failed: Array<{ pageId: string; pageName: string; error: string }>
 }
@@ -94,7 +95,7 @@ export async function initializeIterationProject(
   const targets = data.pages.filter(
     (page) => !page.spec.groupOnly && !!page.spec.iterationChange && !page.iterationInitialized,
   )
-  const result: InitializeIterationResult = { completed: 0, failed: [] }
+  const result: InitializeIterationResult = { total: targets.length, completed: 0, failed: [] }
   let cursor = 0
   const worker = async () => {
     while (cursor < targets.length) {

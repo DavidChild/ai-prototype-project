@@ -653,10 +653,18 @@ async function dispatch(pool: Pool, action: string, input: Entity, actor: Actor 
       const targetPages = targetRows.map((row) => parse<Entity>(row.data))
       const sourceById = new Map(sourcePages.map((page) => [page.id, page]))
       const targetBySpecId = new Map(targetPages.map((page) => [page.spec.id, page]))
+      const targetByName = new Map(targetPages.map((page) => [String(page.spec.name).trim().toLowerCase(), page]))
       const relatedPages = Array.isArray(requirement.relatedPages) ? requirement.relatedPages.slice(0, 100) : []
       const relatedIds = new Set(relatedPages.map((item: Entity) => String(item.pageId ?? '')))
       const usedNames = new Set(targetPages.map((page) => String(page.spec.name).trim().toLowerCase()))
       const now = Date.now()
+      let applied = 0
+      for (const page of targetPages) {
+        if (!page.spec.iterationChange) continue
+        const spec = { ...page.spec }
+        delete spec.iterationChange
+        await putPage(db, { ...page, spec, updatedAt: now }, true)
+      }
       for (const raw of changes) {
         const action = raw?.action === 'create' ? 'create' : raw?.action === 'update' ? 'update' : ''
         if (!action) continue
@@ -664,20 +672,33 @@ async function dispatch(pool: Pool, action: string, input: Entity, actor: Actor 
         const iterationChange = { action, reason: String(raw.reason ?? '根据补充要求继续调整').slice(0, 1200), relatedPageIds: refs }
         if (action === 'update') {
           const sourcePage = sourceById.get(String(raw.sourcePageId ?? ''))
-          const page = sourcePage ? targetBySpecId.get(sourcePage.spec.id) : undefined
+          const page = sourcePage ? (targetBySpecId.get(sourcePage.spec.id) ?? targetByName.get(String(sourcePage.spec.name).trim().toLowerCase())) : undefined
           if (!page || page.spec.groupOnly) continue
           const next = { ...page, spec: { ...page.spec, description: String(raw.description || page.spec.description || '').slice(0,1200), blocks: Array.isArray(raw.blocks) ? raw.blocks.map(String).slice(0,16) : page.spec.blocks, iterationChange }, iterationInitialized: false, genStatus: 'idle', errorMessage: undefined, updatedAt: now }
           await putPage(db, next, true)
+          applied++
         } else {
           const requested = String(raw.name ?? '').trim().slice(0,80)
           if (!requested) continue
+          const existing = targetPages.find((page) => {
+            const name = String(page.spec.name).trim().toLowerCase()
+            return name === requested.toLowerCase() || name.startsWith(`${requested.toLowerCase()} ${String(target.iteration ?? '').toLowerCase()}`)
+          })
+          if (existing) {
+            const next = { ...existing, spec:{ ...existing.spec, description:String(raw.description || existing.spec.description || '').slice(0,1200), blocks:Array.isArray(raw.blocks)?raw.blocks.map(String).slice(0,16):existing.spec.blocks, iterationChange }, iterationInitialized:false, genStatus:'idle', errorMessage:undefined, updatedAt:now }
+            await putPage(db, next, true)
+            applied++
+            continue
+          }
           let name = requested, suffix = 2
           while (usedNames.has(name.toLowerCase())) name = `${requested} ${suffix++}`
           usedNames.add(name.toLowerCase())
           const sourceParent = sourceById.get(String(raw.parentSourcePageId ?? ''))
           await putPage(db, { id:nanoid(), projectId:target.id, sortOrder:targetPages.length++, genStatus:'idle', reviewPending:false, iterationInitialized:false, updatedAt:now, spec:{ id:nanoid(), name, ...(sourceParent ? { parentId:sourceParent.spec.id } : {}), description:String(raw.description ?? '').slice(0,1200), blocks:Array.isArray(raw.blocks)?raw.blocks.map(String).slice(0,16):[], iterationChange } })
+          applied++
         }
       }
+      if (!applied) throw new Error('新规划没有匹配到任何可修改或新增的目标页面，请重新补充调整要求')
       const iterationRequirement = { ...(target.iterationRequirement ?? {}), text:String(requirement.text ?? target.iterationRequirement?.text ?? '').slice(0,200000), productNature:String(plan.productNature ?? '').slice(0,240), relatedPages, planSummary:String(plan.summary ?? '').slice(0,2000), updatedAt:now }
       return updateProject(db, target.id, { iterationRequirement }, false)
     })

@@ -157,6 +157,7 @@ test('MySQL project iteration copying and isolation', async (t) => {
     assert.equal(updated.spec.iterationChange.reason, '沿用原页面继续修改')
     assert.ok(after.pages.some((page) => page.spec.name === '导出记录'))
     assert.ok(after.pages.some((page) => page.id === existingCreated.id), 'unrelated existing pages are preserved')
+    assert.equal(after.pages.find((page) => page.id === existingCreated.id).spec.iterationChange, undefined, 'old plan markers are cleared')
   })
   await t.test('editing a copied iteration leaves the source unchanged', async () => {
     const child = (await pageRepo.listByProject(copied.id))[1]
