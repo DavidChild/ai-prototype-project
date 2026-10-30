@@ -123,12 +123,9 @@ const managedProjectName = computed(() => managedVersions.value[0]?.name ?? '项
 async function refresh() {
   loading.value = true
   try {
-    const [projectList, counts] = await Promise.all([
-      projectRepo.list(),
-      projectRepo.pageCounts(),
-    ])
+    const projectList = await projectRepo.listSummaries()
     projects.value = projectList
-    pageCounts.value = new Map(counts.map((item) => [item.projectId, item.count]))
+    pageCounts.value = new Map(projectList.map((item) => [item.id, item.pageCount]))
   } finally {
     loading.value = false
   }

@@ -247,6 +247,32 @@ async function dispatch(pool: Pool, action: string, input: Entity, actor: Actor 
     ) ORDER BY p.updated_at DESC`, [user.tenantId,user.tenantRole ?? '',user.userId,user.tenantRole ?? ''])
     return result.map((row)=>parse(row.data))
   }
+  if (action === 'project.listSummaries') {
+    if (!user.tenantId) return []
+    const result = await rows<RowDataPacket[]>(pool, `SELECT p.data, COUNT(pg.id) pageCount
+      FROM projects p LEFT JOIN pages pg ON pg.project_id=p.id
+      WHERE p.tenant_id=? AND (
+        ?='tenant_admin' OR (EXISTS(SELECT 1 FROM project_members pm WHERE pm.project_id=p.id AND pm.user_id=?) AND NOT (?='reviewer' AND COALESCE(JSON_EXTRACT(p.data,'$.hidden')=true,false)))
+      ) GROUP BY p.id,p.data,p.updated_at ORDER BY p.updated_at DESC`, [user.tenantId,user.tenantRole ?? '',user.userId,user.tenantRole ?? ''])
+    return result.map((row) => {
+      const item = parse<Entity>(row.data)
+      return {
+        id: item.id,
+        familyId: item.familyId,
+        iteration: item.iteration,
+        basedOnId: item.basedOnId,
+        name: item.name,
+        endpointProfile: item.endpointProfile,
+        hidden: item.hidden,
+        platform: item.platform,
+        styleSpec: item.styleSpec,
+        modelOverride: item.modelOverride,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+        pageCount: Number(row.pageCount),
+      }
+    })
+  }
   if (action === 'project.pageCounts') {
     if (!user.tenantId) return []
     const result = await rows<RowDataPacket[]>(pool, `SELECT p.id projectId, COUNT(pg.id) pageCount

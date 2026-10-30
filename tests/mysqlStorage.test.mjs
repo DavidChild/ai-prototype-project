@@ -75,6 +75,9 @@ test('MySQL storage schema, migration, atomic writes and concurrency', async (t)
   await t.test('project page counts are returned by one compact aggregate query', async () => {
     const counts = await projectRepo.pageCounts()
     assert.deepEqual(counts.find((item) => item.projectId === 'test'), { projectId: 'test', count: 1 })
+    const summary = (await projectRepo.listSummaries()).find((item) => item.id === 'test')
+    assert.equal(summary.pageCount, 1)
+    assert.equal(summary.analysis, undefined)
   })
   await t.test('undefined patch fields are actually removed and parallel patches do not overwrite', async () => {
     await pageRepo.update('main', { errorMessage: 'old failure' })

@@ -19,6 +19,7 @@ function patchPayload<T extends object>(patch: T) {
 
 export const projectRepo = {
   list: () => storageRequest<Project[]>('project.list'),
+  listSummaries: () => storageRequest<Array<Project & { pageCount: number }>>('project.listSummaries'),
   pageCounts: () => storageRequest<Array<{ projectId: string; count: number }>>('project.pageCounts'),
   get: (id: string) => storageRequest<Project | undefined>('project.get', { id }),
   async create(project: Project): Promise<void> {

@@ -52,7 +52,7 @@ function statusType(task: IterationTask) {
 }
 async function load() {
   loading.value = true
-  try { [tasks.value, projects.value] = await Promise.all([iterationTaskRepo.listSummaries(), projectRepo.list()]) }
+  try { [tasks.value, projects.value] = await Promise.all([iterationTaskRepo.listSummaries(), projectRepo.listSummaries()]) }
   finally { loading.value = false }
 }
 function openCreate() {
