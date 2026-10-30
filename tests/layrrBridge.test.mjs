@@ -73,6 +73,7 @@ test('Layrr workspaces serve official overlay, accept local jobs and isolate fil
         name: '标准按钮',
         description: '使用统一的主按钮结构',
         html: '<button class="primary">提交</button>',
+        scope: 'global',
       }],
     })
   ).data
@@ -87,6 +88,7 @@ test('Layrr workspaces serve official overlay, accept local jobs and isolate fil
   assert.match(initialPreview, /__layrr__\/overlay\.js/)
   assert.match(initialPreview, /__QP_LAYRR_CONSTRAINTS__/)
   assert.match(initialPreview, /标准按钮/)
+  assert.match(initialPreview, /"scope":"global"/)
   assert.match(initialPreviewResponse.headers.get('content-security-policy'), /'unsafe-eval'/)
   assert.equal(await readFile(session.file, 'utf8'), initialHtml)
   const documentUrl = origin + '/api/layrr/' + session.id + '/document'

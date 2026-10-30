@@ -22,7 +22,7 @@ type Edit = {
   selector: string
   elements?: { selector: string }[]
   attachments?: EditAttachment[]
-  constraint?: { name: string; description: string; html: string }
+  constraint?: { name: string; description: string; html: string; scope?: 'global' | 'page' }
 }
 type Submission = {
   id: string
@@ -113,7 +113,7 @@ function validateEditAttachments(value: unknown): EditAttachment[] {
   })
 }
 
-function validateConstraints(value: unknown): Array<{ name: string; description: string; html: string }> {
+function validateConstraints(value: unknown): Array<{ name: string; description: string; html: string; scope?: 'global' | 'page' }> {
   if (value === undefined) return []
   if (!Array.isArray(value) || value.length > 16) throw new Error('约束数据无效')
   return value.map((item) => {
@@ -123,7 +123,8 @@ function validateConstraints(value: unknown): Array<{ name: string; description:
     const description = String(input.description ?? '').trim().slice(0, 2000)
     const html = String(input.html ?? '').trim()
     if (!name || !html || html.length > 30000) throw new Error('约束名称或 HTML 无效')
-    return { name, description, html }
+    const scope = item.scope === 'page' ? 'page' : item.scope === 'global' ? 'global' : undefined
+    return { name, description, html, ...(scope ? { scope } : {}) }
   })
 }
 

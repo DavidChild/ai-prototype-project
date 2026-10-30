@@ -98,7 +98,7 @@ test('workspace editor bar uses a stable shadow without backdrop compositing', (
 test('workspace edit panel provides a four-times larger responsive editing area', () => {
   const adapted = adaptLayrrWorkspaceOverlay(original)
   assert.match(adapted, /width:min\(640px,calc\(100vw - 32px\)\)/)
-  assert.match(adapted, /max-height:min\(560px,calc\(100vh - 72px\)\)/)
+  assert.match(adapted, /max-height:min\(560px,calc\(100vh - 88px\)\)/)
   assert.match(adapted, /min-height:240px;max-height:480px/)
   assert.doesNotMatch(adapted, /\.\$\{L\}-panel\{\s*display:none;width:320px;max-height:280px/)
 })
@@ -144,6 +144,9 @@ test('workspace overlay accepts one reference image with or without written inst
 test('workspace overlay can replace the selected element from a project constraint', () => {
   const adapted = adaptLayrrWorkspaceOverlay(original)
   assert.match(adapted, /aria-label="选择约束替换"/)
+  assert.match(adapted, /约束替换（可选）/)
+  assert.match(adapted, /constraintGroups\.global\.label = "全局约束"/)
+  assert.match(adapted, /constraintGroups\.page\.label = "页面约束"/)
   assert.match(adapted, /替换选中元素/)
   assert.match(adapted, /window\.__QP_LAYRR_CONSTRAINTS__/)
   assert.match(adapted, /constraintSelectEl/)

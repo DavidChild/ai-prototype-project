@@ -44,7 +44,10 @@ export function adaptLayrrWorkspaceOverlay(source: string): string {
     '    .${L}-ac img{width:20px;height:20px;object-fit:cover;border-radius:3px;flex:0 0 auto}',
     '    .${L}-ac span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
     '    .${L}-ad{border:0;background:transparent;color:${C.textDim};cursor:pointer;padding:0;font-size:${size.base};line-height:1}',
-    '    .${L}-cr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:10px 10px 0}',
+    '    .${L}-co{margin:0 10px 10px;border:1px solid ${C.border};border-radius:${radius.md};background:rgba(161,161,170,.05)}',
+    '    .${L}-co summary{padding:8px 10px;color:${C.textMuted};font-size:${size.sm};cursor:pointer;user-select:none}',
+    '    .${L}-co[open] summary{border-bottom:1px solid ${C.border}}',
+    '    .${L}-cr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:10px}',
     '    .${L}-cs{min-width:0;height:34px;border:1px solid ${C.border};border-radius:${radius.md};background:${C.surface};color:${C.text};padding:0 8px;font:inherit}',
     '    .${L}-cb{height:34px;padding:0 12px;border:1px solid rgba(96,165,250,.55);border-radius:${radius.md};background:rgba(59,130,246,.16);color:#bfdbfe;cursor:pointer;font-size:${size.sm};font-weight:600;white-space:nowrap}',
     '    .${L}-cb:disabled{opacity:.4;cursor:default}',
@@ -58,10 +61,6 @@ export function adaptLayrrWorkspaceOverlay(source: string): string {
     '      </div>',
   ].join('\n')
   const attachmentHtml = [
-    '      <div class="${L}-cr">',
-    '        <select class="${L}-cs" aria-label="选择约束替换"><option value="">选择约束替换…</option></select>',
-    '        <button type="button" class="${L}-cb" disabled>替换选中元素</button>',
-    '      </div>',
     '      <div class="${L}-ia">',
     '        <div class="${L}-ir">',
     '          <textarea class="${L}-in" placeholder="Describe the change..." rows="1"></textarea>',
@@ -74,6 +73,13 @@ export function adaptLayrrWorkspaceOverlay(source: string): string {
     '          <div class="${L}-al"></div>',
     '        </div>',
     '      </div>',
+    '      <details class="${L}-co">',
+    '        <summary>约束替换（可选）</summary>',
+    '        <div class="${L}-cr">',
+    '          <select class="${L}-cs" aria-label="选择约束替换"><option value="">请选择约束…</option></select>',
+    '          <button type="button" class="${L}-cb" disabled>替换选中元素</button>',
+    '        </div>',
+    '      </details>',
   ].join('\n')
   const attachmentHelpersNeedle = '    async function sendEdit() {'
   const attachmentHelpers = [
@@ -142,7 +148,11 @@ export function adaptLayrrWorkspaceOverlay(source: string): string {
     ],
     [
       '    .${L}-panel{\n      display:none;width:320px;max-height:280px;overflow-y:auto;',
-      '    .${L}-panel{\n      display:none;width:min(640px,calc(100vw - 32px));max-height:min(560px,calc(100vh - 72px));overflow-y:auto;',
+      '    .${L}-panel{\n      display:none;width:min(640px,calc(100vw - 32px));max-height:min(560px,calc(100vh - 88px));overflow-y:auto;',
+    ],
+    [
+      '    #${L}-bar.expanded{overflow:hidden;border-radius:14px}',
+      '    #${L}-bar.expanded{overflow:hidden;border-radius:14px;left:auto!important;top:auto!important;right:16px!important;bottom:16px!important;max-height:calc(100vh - 32px)}',
     ],
     [
       '      min-height:30px;max-height:72px;',
@@ -203,7 +213,7 @@ export function adaptLayrrWorkspaceOverlay(source: string): string {
     ],
     [
       '      app2.sendBtnEl = panel.querySelector(`.${L4}-sb`);',
-      '      app2.sendBtnEl = panel.querySelector(`.${L4}-sb`);\n      app2.attachmentInputEl = panel.querySelector(`.${L4}-af`);\n      app2.attachmentListEl = panel.querySelector(`.${L4}-al`);\n      app2.constraintSelectEl = panel.querySelector(`.${L4}-cs`);\n      app2.constraintButtonEl = panel.querySelector(`.${L4}-cb`);\n      app2.attachments = [];\n      for (const [index, item] of (window.__QP_LAYRR_CONSTRAINTS__ || []).entries()) {\n        const option = document.createElement("option");\n        option.value = String(index);\n        option.textContent = item.name;\n        app2.constraintSelectEl?.appendChild(option);\n      }',
+      '      app2.sendBtnEl = panel.querySelector(`.${L4}-sb`);\n      app2.attachmentInputEl = panel.querySelector(`.${L4}-af`);\n      app2.attachmentListEl = panel.querySelector(`.${L4}-al`);\n      app2.constraintSelectEl = panel.querySelector(`.${L4}-cs`);\n      app2.constraintButtonEl = panel.querySelector(`.${L4}-cb`);\n      app2.attachments = [];\n      const constraintGroups = { global: document.createElement("optgroup"), page: document.createElement("optgroup") };\n      constraintGroups.global.label = "全局约束";\n      constraintGroups.page.label = "页面约束";\n      for (const [index, item] of (window.__QP_LAYRR_CONSTRAINTS__ || []).entries()) {\n        const option = document.createElement("option");\n        option.value = String(index);\n        option.textContent = item.name;\n        constraintGroups[item.scope === "page" ? "page" : "global"].appendChild(option);\n      }\n      if (constraintGroups.global.children.length) app2.constraintSelectEl?.appendChild(constraintGroups.global);\n      if (constraintGroups.page.children.length) app2.constraintSelectEl?.appendChild(constraintGroups.page);',
     ],
     [
       '      app2.sendBtnEl.addEventListener("click", sendEdit);',
