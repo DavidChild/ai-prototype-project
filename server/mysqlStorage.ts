@@ -247,6 +247,15 @@ async function dispatch(pool: Pool, action: string, input: Entity, actor: Actor 
     ) ORDER BY p.updated_at DESC`, [user.tenantId,user.tenantRole ?? '',user.userId,user.tenantRole ?? ''])
     return result.map((row)=>parse(row.data))
   }
+  if (action === 'project.pageCounts') {
+    if (!user.tenantId) return []
+    const result = await rows<RowDataPacket[]>(pool, `SELECT p.id projectId, COUNT(pg.id) pageCount
+      FROM projects p LEFT JOIN pages pg ON pg.project_id=p.id
+      WHERE p.tenant_id=? AND (
+        ?='tenant_admin' OR (EXISTS(SELECT 1 FROM project_members pm WHERE pm.project_id=p.id AND pm.user_id=?) AND NOT (?='reviewer' AND COALESCE(JSON_EXTRACT(p.data,'$.hidden')=true,false)))
+      ) GROUP BY p.id`, [user.tenantId,user.tenantRole ?? '',user.userId,user.tenantRole ?? ''])
+    return result.map((row) => ({ projectId: String(row.projectId), count: Number(row.pageCount) }))
+  }
   if (action === 'project.create' || action === 'project.createBundle') {
     const creator = requireProjectCreator(user)
     const incoming = action === 'project.create' ? input.project : action === 'project.createBundle' ? input.project : input.project
@@ -317,6 +326,46 @@ async function dispatch(pool: Pool, action: string, input: Entity, actor: Actor 
         }
       }
       return accessible
+    }
+    case 'iterationTask.listSummaries': {
+      const result = await rows<RowDataPacket[]>(pool, 'SELECT data FROM iteration_tasks WHERE tenant_id = ? ORDER BY updated_at DESC LIMIT 50', [user.tenantId!])
+      let tasks = result.map((row) => parse<Entity>(row.data))
+      if (user.tenantRole !== 'tenant_admin') {
+        if (user.tenantRole !== 'designer') return []
+        const assignedRows = await rows<RowDataPacket[]>(pool, `SELECT pm.project_id projectId FROM project_members pm
+          JOIN projects p ON p.id=pm.project_id WHERE pm.user_id=? AND p.tenant_id=?`, [user.userId, user.tenantId!])
+        const assigned = new Set(assignedRows.map((row) => String(row.projectId)))
+        tasks = tasks.filter((task) => (task.endpoints ?? []).every((endpoint: Entity) => assigned.has(String(endpoint.sourceProjectId))))
+      }
+      return tasks.map((task) => ({
+        id: task.id,
+        title: task.title,
+        status: task.status,
+        primarySourceId: task.primarySourceId,
+        requirementText: '',
+        documents: [],
+        images: [],
+        endpoints: (task.endpoints ?? []).map((endpoint: Entity) => ({
+          sourceProjectId: endpoint.sourceProjectId,
+          sourceFamilyId: endpoint.sourceFamilyId,
+          projectName: endpoint.projectName,
+          sourceIteration: endpoint.sourceIteration,
+          targetIteration: endpoint.targetIteration,
+          generationProviderId: endpoint.generationProviderId,
+          generationModel: endpoint.generationModel,
+          status: endpoint.status,
+          targetProjectId: endpoint.targetProjectId,
+          completedPages: endpoint.completedPages,
+          totalPages: endpoint.totalPages,
+          error: endpoint.error,
+          aiSession: endpoint.aiSession ? { ...endpoint.aiSession, system: '', messages: [] } : undefined,
+        })),
+        cancelledAt: task.cancelledAt,
+        cancelMode: task.cancelMode,
+        error: task.error,
+        createdAt: task.createdAt,
+        updatedAt: task.updatedAt,
+      }))
     }
     case 'iterationTask.create': return transaction(pool, async (db) => {
       const now = Date.now()

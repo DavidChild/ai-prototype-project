@@ -72,6 +72,10 @@ test('MySQL storage schema, migration, atomic writes and concurrency', async (t)
     await projectRepo.removeCascade('empty-target')
   })
   await createProjectBundle(reactive(project('test')), [page('main', 'test')], [], [])
+  await t.test('project page counts are returned by one compact aggregate query', async () => {
+    const counts = await projectRepo.pageCounts()
+    assert.deepEqual(counts.find((item) => item.projectId === 'test'), { projectId: 'test', count: 1 })
+  })
   await t.test('undefined patch fields are actually removed and parallel patches do not overwrite', async () => {
     await pageRepo.update('main', { errorMessage: 'old failure' })
     await Promise.all([pageRepo.update('main', { errorMessage: undefined }), pageRepo.update('main', { reviewPending: true })])

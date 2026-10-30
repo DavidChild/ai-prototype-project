@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { useDialog, useMessage } from 'naive-ui'
 import type { Project, ProjectEndpointProfile } from '@/types/project'
 import type { IterationTask } from '@/types/iterationTask'
-import { projectRepo, pageRepo } from '@/services/storage/repositories'
+import { projectRepo } from '@/services/storage/repositories'
 import { getStylePreset } from '@/data/stylePresets'
 import { formatTime } from '@/utils/format'
 import { useSettingsStore } from '@/stores/settings'
@@ -123,12 +123,12 @@ const managedProjectName = computed(() => managedVersions.value[0]?.name ?? '项
 async function refresh() {
   loading.value = true
   try {
-    projects.value = await projectRepo.list()
-    const counts = new Map<string, number>()
-    for (const p of projects.value) {
-      counts.set(p.id, (await pageRepo.listByProject(p.id)).length)
-    }
-    pageCounts.value = counts
+    const [projectList, counts] = await Promise.all([
+      projectRepo.list(),
+      projectRepo.pageCounts(),
+    ])
+    projects.value = projectList
+    pageCounts.value = new Map(counts.map((item) => [item.projectId, item.count]))
   } finally {
     loading.value = false
   }

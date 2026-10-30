@@ -19,6 +19,7 @@ function patchPayload<T extends object>(patch: T) {
 
 export const projectRepo = {
   list: () => storageRequest<Project[]>('project.list'),
+  pageCounts: () => storageRequest<Array<{ projectId: string; count: number }>>('project.pageCounts'),
   get: (id: string) => storageRequest<Project | undefined>('project.get', { id }),
   async create(project: Project): Promise<void> {
     await storageRequest('project.create', { project: clone(project) })
@@ -62,6 +63,7 @@ export const projectRepo = {
 
 export const iterationTaskRepo = {
   list: () => storageRequest<IterationTask[]>('iterationTask.list'),
+  listSummaries: () => storageRequest<IterationTask[]>('iterationTask.listSummaries'),
   create: (task: IterationTask) =>
     storageRequest<IterationTask>('iterationTask.create', { task: clone(task) }),
   save: (task: IterationTask) =>
