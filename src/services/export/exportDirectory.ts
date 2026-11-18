@@ -1,6 +1,7 @@
 const DB_NAME = 'quickpage-export-directories'
 const STORE_NAME = 'directories'
 const memoryHandles = new Map<string, FileSystemDirectoryHandle>()
+const permissionStates = new Map<string, PermissionState>()
 
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -26,7 +27,10 @@ async function readStoredHandle(projectId: string): Promise<FileSystemDirectoryH
       request.onerror = () => reject(request.error)
     })
     db.close()
-    if (handle) memoryHandles.set(projectId, handle)
+    if (handle) {
+      memoryHandles.set(projectId, handle)
+      permissionStates.set(projectId, await handle.queryPermission({ mode: 'readwrite' }))
+    }
     return handle
   } catch {
     return null
@@ -69,22 +73,21 @@ export async function chooseExportDirectory(projectId: string): Promise<FileSyst
     mode: 'readwrite',
     startIn: previous ?? 'downloads',
   })
-  const permission = await handle.requestPermission({ mode: 'readwrite' })
-  if (permission !== 'granted') throw new Error('未获得所选目录的写入权限')
+  // The picker itself grants access. Avoid a second permission prompt that may be
+  // blocked after the picker resolves and leave the export waiting indefinitely.
+  memoryHandles.set(projectId, handle)
+  permissionStates.set(projectId, 'granted')
   await storeHandle(projectId, handle)
   return handle
 }
 
 export async function ensureExportDirectory(projectId: string): Promise<FileSystemDirectoryHandle> {
   requireDirectoryPicker()
-  // getExportDirectoryName primes this cache when the project opens. If it has not finished yet,
-  // opening the picker immediately is safer than losing the click's transient user activation.
   const handle = memoryHandles.get(projectId)
-  if (!handle) return chooseExportDirectory(projectId)
-  let permission = await handle.queryPermission({ mode: 'readwrite' })
-  if (permission === 'prompt') permission = await handle.requestPermission({ mode: 'readwrite' })
-  if (permission !== 'granted') return chooseExportDirectory(projectId)
-  return handle
+  if (handle && permissionStates.get(projectId) === 'granted') return handle
+  // Do not await permission queries here: this function is called from the export
+  // click, and the directory picker must run while that user activation is active.
+  return chooseExportDirectory(projectId)
 }
 
 export async function writeExportFile(
