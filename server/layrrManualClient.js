@@ -54,6 +54,7 @@ let imageRequest = 0,
 let pendingSubmission = null
 let retrySubmission = null
 let childLayoutRowSignature = ''
+let selectedTextIndex = -1
 function keyFor(node) {
   return node && nodeKeys.get(node)
 }
@@ -403,6 +404,7 @@ function select(key) {
   if (!selectable(el)) return
   if (gesture?.kind === 'nudge' && selected !== el) finishNudge()
   const sameSelection = selected === el
+  if (!sameSelection) selectedTextIndex = -1
   if (selected !== el) imageRequest++
   selected = el
   selectedKey = key
@@ -448,13 +450,28 @@ function select(key) {
     image?.tagName.toLowerCase() === 'svg'
       ? '替换后转换为图片，保留原有尺寸与样式；可撤销恢复 SVG。'
       : '替换后可撤销，不调用 AI。'
-  const text = textSelection(el)
+  const summary = textSelection(el, -1)
+  const text = textSelection(el, selectedTextIndex)
+  const textSegment = $('textSegment')
+  textSegment.replaceChildren()
+  textSegment.hidden = summary.segments.length < 2
+  summary.segments.forEach((segment) => {
+    const option = document.createElement('option')
+    option.value = String(segment.index)
+    option.textContent = segment.label
+    textSegment.append(option)
+  })
+  if (selectedTextIndex >= 0 && !summary.segments.some((segment) => segment.index === selectedTextIndex))
+    selectedTextIndex = -1
+  if (textSegment.hidden) selectedTextIndex = -1
+  else textSegment.value = String(selectedTextIndex)
+  const canEditText = editableText(el) || selectedTextIndex >= 0 && text.editable
   if (!sameSelection || document.activeElement !== $('text')) $('text').value = text.value
-  $('text').disabled = $('applyText').disabled = !editableText(el)
-  $('textHint').textContent = editableText(el)
-    ? '仅修改文字，保留图标和内部标签，不会插入 HTML。'
-    : text.value
-      ? '包含多段文字，已显示供查看；请选择子级中的具体文字后编辑。'
+  $('text').disabled = $('applyText').disabled = !canEditText
+  $('textHint').textContent = canEditText
+    ? '仅修改选中的文字片段，保留其他文字、图标和内部标签。'
+    : summary.segments.length > 1
+      ? '请选择要修改的文字片段；只会替换该段文字，不影响其他 HTML 子元素。'
       : '未找到可编辑文字，请选择具体文字元素。'
   document.querySelectorAll('[data-style]').forEach((input) => {
     const property = input.dataset.style
@@ -925,7 +942,11 @@ frame.addEventListener('load', () => {
       event.stopImmediatePropagation()
       if (suppressClick || event.target.closest?.('#qp-manual-highlight')) return
       const el = event.target.closest?.('[' + marker + ']')
-      if (el) select(el.getAttribute(marker))
+      if (el) {
+        const key = el.getAttribute(marker)
+        if (el !== selected) selectedTextIndex = -1
+        select(key)
+      }
     },
     true,
   )
@@ -934,8 +955,11 @@ frame.addEventListener('load', () => {
     (event) => {
       event.preventDefault()
       event.stopImmediatePropagation()
-      if (editableText(selected)) {
-        setInspectorTab('attributesTab')
+      const summary = textSelection(selected, -1)
+      if (!summary.segments.length) return
+      setInspectorTab('attributesTab')
+      if (summary.segments.length > 1 && selectedTextIndex < 0) $('textSegment').focus()
+      else {
         $('text').focus()
         $('text').select()
       }
@@ -993,13 +1017,21 @@ $('gridAuto').onchange = () => {
   status(`容器网格拖拽：${$('gridAuto').checked ? '自动' : '手动'}步长 ${gridStep()}px`)
 }
 $('applyText').onclick = () => {
-  if (!editableText(selected)) return
+  const selectedText = textSelection(selected, selectedTextIndex)
+  if (!selectedText.editable) return
   const all = attributeTargets()
-  const targets = all.filter(editableText)
+  const targets = all.filter((element) => textSelection(element, selectedTextIndex).editable)
   // Capture text nodes first: matching ancestors and descendants may share one.
-  const texts = new Map(targets.map((element) => [element, textSelection(element)]))
+  const texts = new Map(targets.map((element) => [element, textSelection(element, selectedTextIndex)]))
   const value = $('text').value
   commitAttributes((element) => texts.get(element).apply(value), targets, all.length - targets.length)
+}
+$('textSegment').onchange = () => {
+  selectedTextIndex = Number($('textSegment').value)
+  if (!Number.isInteger(selectedTextIndex)) selectedTextIndex = -1
+  select(selectedKey)
+  $('text').focus()
+  $('text').select()
 }
 document.querySelectorAll('input[name="attributeScope"]').forEach((input) => {
   input.onchange = () => {

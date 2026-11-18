@@ -10,6 +10,7 @@ import {
   chooseExportDirectory,
   ensureExportDirectory,
   getExportDirectoryName,
+  hasReadyExportDirectory,
   isDirectorySelectionCanceled,
   writeExportFile,
 } from '@/services/export/exportDirectory'
@@ -162,6 +163,12 @@ async function chooseDirectory() {
   }
 }
 
+function chooseDirectoryFromClick(projectId: string): Promise<FileSystemDirectoryHandle> {
+  // Call the native picker synchronously from the original menu click so browser
+  // transient user activation is not lost while the annotation dialog is shown.
+  return chooseExportDirectory(projectId)
+}
+
 async function writeHierarchicalHtml(
   directory: FileSystemDirectoryHandle,
   pages: readonly Page[],
@@ -202,19 +209,28 @@ function handle(key: string | number) {
   if (key === 'choose-directory') return void chooseDirectory()
   if (exporting.value) return
   if (key === 'project-package') return void performExport(key, true)
+  const project = wb.project
+  if (!project) return
+  const directoryPromise = hasReadyExportDirectory(project.id)
+    ? Promise.resolve(null)
+    : chooseDirectoryFromClick(project.id)
   dialog.info({
     title: '是否携带原型标注？',
     content: '带标注导出会内嵌 web-remarq 标注、标记点和查看工具；不带标注则只导出原型页面。',
     positiveText: '带标注导出',
     negativeText: '不带标注导出',
-    // Do not return the export promise: Naive UI keeps the confirmation dialog open
-    // while a returned promise is pending, including while directory permission is requested.
-    onPositiveClick: () => void performExport(key, true),
-    onNegativeClick: () => void performExport(key, false),
+    // Start directory selection from the original menu click; dialog callbacks do
+    // not retain browser user activation required by showDirectoryPicker().
+    onPositiveClick: () => void performExport(key, true, directoryPromise),
+    onNegativeClick: () => void performExport(key, false, directoryPromise),
   })
 }
 
-async function performExport(key: string | number, includeAnnotations: boolean) {
+async function performExport(
+  key: string | number,
+  includeAnnotations: boolean,
+  directoryPromise?: Promise<FileSystemDirectoryHandle | null>,
+) {
   const project = wb.project
   if (!project || exporting.value) return
   const selectedPages = [...effectiveSelectedPages.value]
@@ -222,7 +238,8 @@ async function performExport(key: string | number, includeAnnotations: boolean) 
   let loading: ReturnType<typeof message.loading> | undefined
   try {
     loading = message.loading('正在准备导出目录…', { duration: 0 })
-    const directory = await ensureExportDirectory(project.id)
+    const selectedDirectory = directoryPromise ? await directoryPromise : null
+    const directory = selectedDirectory ?? await ensureExportDirectory(project.id)
     if (wb.project?.id !== project.id) throw new Error('项目已切换，请重新导出')
     directoryName.value = directory.name
     loading.content = '正在导出…'

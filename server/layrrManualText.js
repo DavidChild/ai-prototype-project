@@ -15,7 +15,7 @@ const excluded = new Set([
 ])
 
 // Edit the text node, never replace a container's textContent (which removes icons/markup).
-export function textSelection(element) {
+export function textSelection(element, selectedIndex = -1) {
   const texts = []
   function visit(node) {
     if (node.nodeType === 3) {
@@ -34,11 +34,21 @@ export function textSelection(element) {
     for (const child of node.childNodes) visit(child)
   }
   if (element) visit(element)
-  const target = texts.length === 1 ? texts[0] : null
+  const target =
+    texts.length === 1 ? texts[0] : selectedIndex >= 0 ? texts[selectedIndex] ?? null : null
   const emptyLeaf =
     element && !excluded.has(element.tagName.toUpperCase()) && element.childNodes.length === 0
   return {
-    value: texts.map((node) => node.nodeValue.trim()).join('\n'),
+    value:
+      texts.length > 1 && selectedIndex < 0
+        ? texts.map((node) => node.nodeValue.trim()).join('\n')
+        : (target?.nodeValue.trim() ??
+          (emptyLeaf ? '' : texts.map((node) => node.nodeValue.trim()).join('\n'))),
+    segments: texts.map((node, index) => ({
+      index,
+      value: node.nodeValue.trim(),
+      label: `${index + 1}. ${node.nodeValue.trim().replace(/\s+/g, ' ').slice(0, 48)}`,
+    })),
     editable: Boolean(target || emptyLeaf),
     apply(value) {
       if (target) {

@@ -323,6 +323,23 @@ test('multiple text nodes are displayed but cannot flatten nested formatting', (
   assert.equal(two.nodeValue, '随时可控')
 })
 
+test('a selected text segment in nested HTML is editable without changing sibling markup', () => {
+  const first = textNode('标题 ')
+  const nestedText = textNode('可编辑内容')
+  const strong = element('STRONG', [nestedText])
+  const root = element('DIV', [first, strong])
+  const summary = textSelection(root, -1)
+  assert.equal(summary.editable, false)
+  assert.equal(summary.segments.length, 2)
+  const selected = textSelection(root, 1)
+  assert.equal(selected.editable, true)
+  assert.equal(selected.value, '可编辑内容')
+  selected.apply('修改后的内容')
+  assert.equal(first.nodeValue, '标题 ')
+  assert.equal(nestedText.nodeValue, '修改后的内容')
+  assert.equal(root.childNodes[1], strong)
+})
+
 test('hidden decorative text and scripts do not become editable business text', () => {
   const root = element('DIV', [
     element('SPAN', [textNode('icon')], { 'aria-hidden': 'true' }),

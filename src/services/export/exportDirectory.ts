@@ -90,6 +90,12 @@ export async function ensureExportDirectory(projectId: string): Promise<FileSyst
   return chooseExportDirectory(projectId)
 }
 
+export function hasReadyExportDirectory(projectId: string): boolean {
+  return Boolean(
+    memoryHandles.get(projectId) && permissionStates.get(projectId) === 'granted',
+  )
+}
+
 export async function writeExportFile(
   root: FileSystemDirectoryHandle,
   path: readonly string[],
