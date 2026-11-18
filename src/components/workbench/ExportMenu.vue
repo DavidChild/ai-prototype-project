@@ -207,8 +207,10 @@ function handle(key: string | number) {
     content: '带标注导出会内嵌 web-remarq 标注、标记点和查看工具；不带标注则只导出原型页面。',
     positiveText: '带标注导出',
     negativeText: '不带标注导出',
-    onPositiveClick: () => performExport(key, true),
-    onNegativeClick: () => performExport(key, false),
+    // Do not return the export promise: Naive UI keeps the confirmation dialog open
+    // while a returned promise is pending, including while directory permission is requested.
+    onPositiveClick: () => void performExport(key, true),
+    onNegativeClick: () => void performExport(key, false),
   })
 }
 
@@ -219,10 +221,11 @@ async function performExport(key: string | number, includeAnnotations: boolean) 
   exporting.value = true
   let loading: ReturnType<typeof message.loading> | undefined
   try {
+    loading = message.loading('正在准备导出目录…', { duration: 0 })
     const directory = await ensureExportDirectory(project.id)
     if (wb.project?.id !== project.id) throw new Error('项目已切换，请重新导出')
     directoryName.value = directory.name
-    loading = message.loading('正在导出…', { duration: 0 })
+    loading.content = '正在导出…'
     const updateProgress = (content: string) => {
       if (loading) loading.content = content
     }
