@@ -30,8 +30,12 @@ test('manual inspector separates position controls and element attributes into a
   const position = shell.match(/<section id="positionPanel"[^>]*>([\s\S]*?)<\/section>/)?.[1]
   const attributes = shell.slice(shell.indexOf('<section id="attributesPanel"'), shell.indexOf('</aside>'))
   assert.ok(position)
-  for (const id of ['parent', 'child', 'siblingLeft', 'swapSteps', 'swapRight', 'children', 'layoutHorizontal', 'layoutCenter', 'layoutLeft', 'layoutRight', 'duplicate', 'delete'])
+  for (const id of ['parent', 'child', 'siblingLeft', 'swapSteps', 'swapRight', 'zIndex', 'children', 'layoutHorizontal', 'layoutCenter', 'layoutLeft', 'layoutRight', 'duplicate', 'delete'])
     assert.ok(position.includes(`id="${id}"`))
+  for (const action of ['top', 'bottom', 'raise', 'lower'])
+    assert.ok(position.includes(`data-layer="${action}"`))
+  for (const label of ['置于顶层', '置于底层', '提升一层', '下移一层'])
+    assert.ok(position.includes(label))
   for (const id of ['text', 'applyText', 'imageEditor', 'imageFile', 'imageUrl', 'color', 'width', 'height', 'padding', 'margin']) {
     assert.ok(attributes.includes(`id="${id}"`))
     assert.ok(!position.includes(`id="${id}"`))

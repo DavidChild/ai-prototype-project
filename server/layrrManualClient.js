@@ -222,6 +222,34 @@ function updateSiblingButtons() {
     button.disabled = locked || !siblingKey(button.dataset.swap, swapCount(), context)
   })
 }
+function numericLayer(value) {
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+function elementLayer(element = selected) {
+  if (!element) return 0
+  const live = liveNodes.get(element)
+  return numericLayer(live?.isConnected
+    ? frame.contentWindow.getComputedStyle(live).zIndex
+    : element.style.getPropertyValue('z-index'))
+}
+function siblingLayers() {
+  if (!selected?.parentElement) return [elementLayer()]
+  return Array.from(selected.parentElement.children)
+    .filter(selectable)
+    .map((element) => elementLayer(element))
+}
+function updateLayerControls() {
+  const locked = busy || !!gesture || !ready || !selected
+  $('zIndex').disabled = locked
+  document.querySelectorAll('[data-layer]').forEach((button) => { button.disabled = locked })
+  if (!locked && document.activeElement !== $('zIndex')) $('zIndex').value = String(elementLayer())
+}
+function setElementLayer(value) {
+  if (!selected || !ready || busy || gesture || !Number.isInteger(value)) return
+  const target = selected
+  commit(() => target.style.setProperty('z-index', String(value), 'important'))
+}
 function childLayoutItems(container) {
   return Array.from(container.children).filter(selectable).map((node) => {
     const live = liveNodes.get(node)
@@ -339,6 +367,7 @@ function update() {
   $('gridSize').disabled = locked || !ready || $('dragMode').value !== 'grid'
   $('gridAuto').disabled = $('gridSize').disabled
   updateSiblingButtons()
+  updateLayerControls()
   updateChildLayoutControls()
   updateAttributeScope()
   $('undo').disabled = locked || position <= 0
@@ -412,6 +441,7 @@ function select(key) {
   if (!live) return
   syncGridStep(live)
   updateSiblingButtons()
+  updateLayerControls()
   updateChildLayoutControls()
   updateAttributeScope()
   const style = frame.contentWindow.getComputedStyle(live)
@@ -1190,6 +1220,38 @@ document.querySelectorAll('[data-swap]').forEach((button) => {
       select(keyFor(node))
       status('已与' + { left: '左侧', right: '右侧', up: '上侧', down: '下侧' }[direction] + '第 ' + count + ' 个兄弟调换位置，尚未写入工作区')
     } catch (error) { status(error.message, true) }
+  }
+})
+$('zIndex').onkeydown = (event) => {
+  if (event.key === 'Enter') event.target.blur()
+}
+$('zIndex').onchange = () => {
+  const value = Number($('zIndex').value)
+  if (!Number.isInteger(value)) {
+    $('zIndex').value = String(elementLayer())
+    status('元素层级必须是整数', true)
+    return
+  }
+  setElementLayer(value)
+}
+document.querySelectorAll('[data-layer]').forEach((button) => {
+  button.onclick = () => {
+    if (!selected || !ready || busy || gesture) return
+    const current = elementLayer(), layers = siblingLayers()
+    const value = {
+      top: Math.max(...layers) + 1,
+      bottom: Math.min(...layers) - 1,
+      raise: current + 1,
+      lower: current - 1,
+    }[button.dataset.layer]
+    if (!Number.isInteger(value)) return
+    setElementLayer(value)
+    status({
+      top: '已将元素置于同级元素顶层',
+      bottom: '已将元素置于同级元素底层',
+      raise: '已将元素提升一层',
+      lower: '已将元素下移一层',
+    }[button.dataset.layer] + '，尚未写入工作区')
   }
 })
 function runChildLayout(action) {

@@ -264,6 +264,18 @@ test('manual editing and undo/redo preserve the iframe document and source chang
   await redo()
   assert.equal(await box.getAttribute('style'), topLeftResized)
 
+  await page.locator('[data-layer="raise"]').click()
+  assert.equal(await box.evaluate((element) => getComputedStyle(element).zIndex), '1')
+  await page.locator('[data-layer="lower"]').click()
+  assert.equal(await box.evaluate((element) => getComputedStyle(element).zIndex), '0')
+  await page.locator('#zIndex').fill('7')
+  await page.locator('#zIndex').press('Enter')
+  assert.equal(await box.evaluate((element) => getComputedStyle(element).zIndex), '7')
+  await undo()
+  assert.equal(await box.evaluate((element) => getComputedStyle(element).zIndex), '0')
+  await redo()
+  assert.equal(await box.evaluate((element) => getComputedStyle(element).zIndex), '7')
+
   await box.dblclick()
   assert.equal(await page.locator('#attributesTab').getAttribute('aria-selected'), 'true')
   assert.equal(await page.locator('#text').evaluate((element) => element === document.activeElement), true)
